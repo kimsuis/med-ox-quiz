@@ -235,6 +235,37 @@ details.sum li { margin: 4px 0; }
 .choice.cur { outline: 3px solid color-mix(in srgb, var(--teal) 45%, transparent); outline-offset: 1px; }
 .qnav.rate .btn.ghost { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
 .sub2 { font-weight: 500; font-size: 12px; opacity: .8; }
+/* 한눈에 모드 */
+.fitbtn { width: auto; padding: 0 10px; font-size: 13px; font-weight: 700; }
+.gimg.on { cursor: zoom-in; }
+.lightbox { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .86); display: grid; place-items: center; padding: 16px; cursor: zoom-out; }
+.lightbox img { max-width: 100%; max-height: 92vh; border-radius: 6px; background: #fff; }
+.lightbox .lbclose { position: absolute; top: 14px; right: 18px; color: #fff; font-size: 14px; }
+.figs { display: grid; gap: 8px; }
+body.fit .gq .gimg { max-height: 34vh; width: auto; max-width: 100%; }
+body.fit .figs { display: flex; gap: 6px; align-items: flex-start; justify-content: center; }
+body.fit .figs .gimg { flex: 1 1 0; min-width: 0; width: 100%; object-fit: contain; margin: 0; }
+body.fit .qcard { padding: 14px 16px; gap: 8px; min-height: 0; }
+body.fit .stem p { font-size: 15.5px; margin-bottom: 4px; }
+body.fit .gq details.orig { display: none; }
+body.fit .choices { margin-top: 8px; gap: 6px; }
+body.fit .choices.wide .choice { min-height: 40px; padding: 7px 12px; font-size: 15px; }
+body.fit .kbd { display: none; }
+@media (max-width: 600px) {
+  body.fit .gq .gimg { max-height: 24vh; }
+  body.fit .top { padding-top: 6px; padding-bottom: 6px; }
+  body.fit main { padding-top: 10px; }
+  body.fit .qtop { margin-bottom: 8px; }
+}
+@media (min-width: 900px) {
+  body.fit main { max-width: 1240px; }
+  body.fit .qgrid { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+  body.fit .qgrid .qleft { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto; }
+  body.fit .gq .gimg { max-height: 60vh; }
+  body.fit .qright .choices { margin-top: 0; }
+  body.fit .qright .gexp { margin-top: 10px; }
+}
+
 .yeargrid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
 .yeargrid .chip { padding: 8px 14px; font-size: 15px; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 99px; background: var(--brick); color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-weight: 700; }

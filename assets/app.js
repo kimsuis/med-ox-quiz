@@ -369,6 +369,7 @@
   }
 
   function boot() {
+    if (isFit()) document.body.classList.add("fit");
     // 브라우저가 저장공간 정리할 때 이 사이트 기록은 지우지 말라고 요청
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
     var files = window.SET_FILES || [];
@@ -775,17 +776,19 @@
     var body = c.stem || (c.list && c.list.length)
       ? '<div class="stem">' + stemHTML(c.stem) + "</div>" +
         (c.list && c.list.length ? '<div class="clist">' + c.list.map(function (x, k) { return "<p><b>" + (CIRC[k] || k + 1) + "</b> " + esc(x) + "</p>"; }).join("") + "</div>" : "") +
-        gImgs(c.figs) + (c.orig ? gImgs(c.img) : "")
+        figBox(c.figs) + (c.orig ? gImgs(c.img) : "")
       : gImgs(c.img);
     return body ? '<div class="gcase"><span class="note">공통 지문</span>' + body + "</div>" : "";
   }
   function gStemHTML(q) {
     if (q.stem) {
-      return '<div class="stem">' + stemHTML(q.stem) + "</div>" + gImgs(q.figs) + (q.orig ? gImgs(q.qi) : "") +
+      return '<div class="stem">' + stemHTML(q.stem) + "</div>" + figBox(q.figs) + (q.orig ? gImgs(q.qi) : "") +
         (!q.orig && q.qi && q.qi.length ? '<details class="orig"><summary>원본 캡처 보기</summary>' + gImgs(q.qi) + "</details>" : "");
     }
     return q.qi && q.qi.length ? gImgs(q.qi) : '<p class="qtext">' + esc(q.t) + "</p>";
   }
+  // 그림 여러 장은 한 상자에 (한눈에 모드에선 옆으로 나란히)
+  function figBox(list) { return list && list.length ? '<div class="figs n' + list.length + '">' + gImgs(list) + "</div>" : ""; }
   function gChoiceList(q) {
     if (!q.ch || !q.ch.length) return "";
     return '<div class="clist">' + q.ch.map(function (x, k) { return "<p><b>" + (CIRC[k] || k + 1) + "</b> " + esc(x) + "</p>"; }).join("") + "</div>";
@@ -825,6 +828,7 @@
     var html = '<div class="qtop"><a class="iconbtn" href="' + S.back + '" title="그만 풀기 (Esc)" aria-label="그만 풀기">✕</a>' +
       '<div class="bar"><i class="ok" style="width:' + pct(S.grade === "exam" ? answered : S.i + (revealed ? 1 : 0), S.items.length) + '%"></i></div>' +
       '<span class="count">' + (S.i + 1) + " / " + S.items.length + '</span>' +
+      (isG ? '<button class="iconbtn fitbtn" id="fitBtn" aria-pressed="' + isFit() + '" title="한눈에 모드 — 문제·사진·보기를 한 화면에 (F)">한눈에</button>' : "") +
       '<button class="iconbtn" id="starBtn" aria-pressed="' + isStar(set.id, q.id) + '" title="별표 — 헷갈려서 다시 볼 문제 표시 (S)" aria-label="별표">★</button></div>';
 
     var mixed = S.items.some(function (x) { return x.set !== set; });
@@ -936,6 +940,7 @@
     document.querySelectorAll("[data-self]").forEach(function (b) { b.onclick = function () { answer(b.dataset.self === "1"); }; });
     var nb = document.getElementById("nextBtn"); if (nb) { nb.onclick = next; nb.focus({ preventScroll: true }); }
     var ub = document.getElementById("unsureBtn"); if (ub) ub.onclick = unsure;
+    var fb = document.getElementById("fitBtn"); if (fb) fb.onclick = function () { setFit(!isFit()); viewQuiz(); };
     document.getElementById("starBtn").onclick = function () { toggleStar(set.id, q.id); this.setAttribute("aria-pressed", isStar(set.id, q.id)); };
     var pb = document.getElementById("prevBtn"); if (pb) pb.onclick = function () { move(-1); };
     var sk = document.getElementById("skipBtn"); if (sk) sk.onclick = function () { move(1); };
@@ -958,7 +963,10 @@
       if (/INPUT|TEXTAREA/.test((e.target || {}).tagName || "")) return;
       var c = e.code, dm = /^(?:Digit|Numpad)(\d)$/.exec(c);
       var R = c === "ArrowRight", L = c === "ArrowLeft", U = c === "ArrowUp", D = c === "ArrowDown";
+      var lb = document.querySelector(".lightbox");
+      if (lb) { if (c === "Escape" || c === "Enter" || c === "Space") { e.preventDefault(); lb.remove(); } return; }
       if (c === "KeyS") { document.getElementById("starBtn").click(); return; }
+      if (c === "KeyF" && isG) { setFit(!isFit()); viewQuiz(); return; }
       if (c === "Escape") { location.hash = S.back; return; }
       if (R || L || U || D || c === "Enter" || c === "Space") e.preventDefault();
       // 답을 본 뒤: → 안다(다음), ← 모르겠다(찍었음)
@@ -992,12 +1000,31 @@
     };
   }
 
+  // 한눈에 모드 (그림 높이를 줄이고 넓은 화면에선 문제|보기 두 칸) — 이 기기에 기억
+  function isFit() { try { return localStorage.getItem("mox:fit") === "1"; } catch (e) { return false; } }
+  function setFit(on) {
+    try { localStorage.setItem("mox:fit", on ? "1" : "0"); } catch (e) {}
+    document.body.classList.toggle("fit", !!on);
+  }
+  // 그림을 누르면 크게 보기
+  document.addEventListener("click", function (e) {
+    var im = e.target.closest && e.target.closest("img.gimg.on");
+    if (im && !e.target.closest(".lightbox")) {
+      var box = document.createElement("div");
+      box.className = "lightbox";
+      box.innerHTML = '<img src="' + im.src + '" alt=""><span class="lbclose">닫기 ✕</span>';
+      box.onclick = function () { box.remove(); };
+      document.body.appendChild(box);
+    }
+  });
   function gQuizBody(S, it, picked, revealed, mixed) {
     var set = it.set, q = it.q;
     var cs = q.case && set.L.cases && set.L.cases[q.case];
-    var html = '<div class="card qcard gq">' + gMeta(set, q, mixed) +
+    // 한눈에 모드: 왼쪽(문제·그림) | 오른쪽(보기·채점·해설)으로 나눠 그린다
+    var left = '<div class="card qcard gq">' + gMeta(set, q, mixed) +
       (S.again[S.i] ? '<span class="pill memo">한 번 더</span>' : "") +
       gCaseHTML(cs, q) + gStemHTML(q) + "</div>";
+    var html = "";
     if (q.type === "short") {
       if (!revealed) {
         if (!S.peek) html += '<div class="gbtns"><button class="btn primary" id="peekBtn">답 보기</button><button class="idk" data-v="?">모르겠다</button></div>';
@@ -1036,7 +1063,7 @@
       html += rateButtons(S, g === true);
       html += '<div class="card gexp">' + gExplain(q) + "</div>";
     }
-    return html;
+    return '<div class="qgrid"><div class="qleft">' + left + '</div><div class="qright">' + html + "</div></div>";
   }
 
   // 결과 머리말·다음 복습 안내·안다/모르겠다 버튼
