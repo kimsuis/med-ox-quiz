@@ -805,9 +805,13 @@
       (FLAGS[q.flag] ? '<span class="pill ' + FLAGS[q.flag][1] + '" title="' + esc(q.flagNote) + '">' + FLAGS[q.flag][0] + "</span>" : "") +
       (q.type === "multi" ? '<span class="pill">모두 고르기</span>' : q.type === "short" ? '<span class="pill">주관식</span>' : "") + "</div>";
   }
+  // 해설: 핵심 논리(정답까지 가는 생각의 순서) / 자세한 해설 두 칸. 보완 전 문항은 기존 해설을 자세한 해설로
   function gExplain(q) {
+    var logic = q.logic && q.logic.length ? q.logic : null;
     return (q.key ? '<p class="gkey">💡 ' + esc(q.key) + "</p>" : "") +
-      (q.easy ? '<div class="easy">' + md(q.easy) + "</div>" : '<p class="note">아직 쉬운 해설이 없어요. 아래 출족 원래 풀이를 참고하세요.</p>') +
+      (logic ? '<div class="xsec logic"><h4>핵심 논리</h4><ol>' + logic.map(function (s) { return "<li>" + md(s).replace(/^<p>|<\/p>$/g, "") + "</li>"; }).join("") + "</ol></div>" : "") +
+      (q.detail || q.easy ? '<div class="xsec"><h4>자세한 해설</h4><div class="easy">' + md(q.detail || q.easy) + "</div></div>"
+        : '<p class="note">아직 해설이 없어요. 아래 출족 원래 풀이를 참고하세요.</p>') +
       (q.flagNote ? '<p class="note">⚠ ' + esc(q.flagNote) + "</p>" : "") +
       (q.ref ? '<p class="note">근거: ' + esc(q.ref) + "</p>" : "") +
       (q.ai && q.ai.length ? '<details class="orig"><summary>출족에 있던 원래 풀이 보기</summary>' + gImgs(q.ai) + "</details>" : "");
