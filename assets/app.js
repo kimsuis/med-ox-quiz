@@ -98,7 +98,7 @@
 
   // ── 기기 간 동기화 (GitHub 비밀 gist) ──────────────
   var Sync = (function () {
-    var CONF = "mox:sync", FILE = "med-ox-quiz-progress.json";
+    var CONF = "mox:sync", FILE = "med-ox-quiz-progress.json", KEYF = "med-ox-quiz-key.txt";
     var conf = null;
     try { conf = JSON.parse(localStorage.getItem(CONF) || "null"); } catch (e) {}
     var state = conf ? "idle" : "off", err = "", at = 0, busy = false, again = false, dirty = false, timer = null;
@@ -143,10 +143,16 @@
         if (remote) merge(store, JSON.parse(remote));
         saveLocal();
         gotNew = dump() !== before;
-        if (wasDirty || dump() !== remote) {
+        // 기출 암호 키도 gist로 기기끼리 나눈다
+        var kf = g.files && g.files[KEYF];
+        var keyJob = kf && kf.content && !G.hasPass() ? G.setPass(kf.content.trim(), true).catch(function () {}) : null;
+        var needKey = !kf && G.hasPass();
+        if (wasDirty || dump() !== remote || needKey) {
           var files = {}; files[FILE] = { content: dump() };
-          return api("/gists/" + conf.gist, "PATCH", { files: files });
+          if (needKey) files[KEYF] = { content: G.pass() };
+          return api("/gists/" + conf.gist, "PATCH", { files: files }).then(function () { return keyJob; });
         }
+        return keyJob;
       }).then(function () {
         at = Date.now(); busy = false; set("idle");
         if (again) { again = false; now(); }
@@ -195,6 +201,102 @@
     };
   })();
 
+  // ── 기출 (암호화된 data/g) ─────────────────────────
+  // 공개 저장소에는 암호문만 있다. 키 문구는 기기 localStorage와 내 비밀 gist에만.
+  var G = (function () {
+    var PK = "mox:gkey";
+    var st = { state: "idle", err: "", meta: null, key: null, sets: [], byId: {}, ex: null, data: null };
+    var pass = null;
+    try { pass = localStorage.getItem(PK); } catch (e) {}
+    var urls = {};
+
+    function b64(s) { var b = atob(s), a = new Uint8Array(b.length); for (var i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+    function dec(key, buf) { var u = new Uint8Array(buf); return crypto.subtle.decrypt({ name: "AES-GCM", iv: u.slice(0, 12) }, key, u.slice(12)); }
+    function loadMeta() {
+      if (st.meta) return Promise.resolve(st.meta);
+      return fetch("data/g/meta.json", { cache: "no-cache" }).then(function (r) {
+        if (!r.ok) throw new Error("none");
+        return r.json();
+      }).then(function (m) { st.meta = m; return m; });
+    }
+    function unlock(p) {
+      return loadMeta().then(function () {
+        return crypto.subtle.importKey("raw", new TextEncoder().encode(p), "PBKDF2", false, ["deriveKey"]);
+      }).then(function (base) {
+        return crypto.subtle.deriveKey({ name: "PBKDF2", salt: b64(st.meta.salt), iterations: st.meta.iter, hash: "SHA-256" },
+          base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+      }).then(function (k) {
+        return dec(k, b64(st.meta.check)).then(function () { return k; }, function () { throw new Error("키가 맞지 않아요"); });
+      });
+    }
+    function build(d) {
+      st.data = d; st.byId = {};
+      st.sets = d.lectures.map(function (L) {
+        L.questions.forEach(function (q) { q.id = q.k; });
+        var s = { kind: "g", id: "g:" + L.id, lid: L.id, examDate: d.examDate, title: L.title, professor: L.prof, L: L, questions: L.questions };
+        st.byId[L.id] = s;
+        return s;
+      });
+      d.ex2025.forEach(function (q) { q.id = q.k; q.src = "2025 시험"; q.years = [2025]; });
+      st.ex = { kind: "g", id: "g:EX2025", lid: "EX2025", examDate: d.examDate, title: "2025 실제 시험", professor: "",
+        L: { id: "EX2025", title: "2025 내분비 1차 시험", cases: {}, questions: d.ex2025 }, questions: d.ex2025 };
+      st.byId.EX2025 = st.ex;
+    }
+    function init() {
+      if (!window.crypto || !crypto.subtle || !window.DecompressionStream) {
+        st.state = "error"; st.err = "이 브라우저는 암호 해제를 지원하지 않아요 (최신 Chrome·Safari 사용)";
+        return Promise.resolve();
+      }
+      if (!pass) return loadMeta().then(function () { st.state = "locked"; }, function () { st.state = "none"; });
+      st.state = "loading";
+      return unlock(pass).then(function (k) {
+        st.key = k;
+        return fetch("data/g/index.bin", { cache: "no-cache" }).then(function (r) { return r.arrayBuffer(); }).then(function (b) { return dec(k, b); });
+      }).then(function (plain) {
+        return new Response(new Blob([plain]).stream().pipeThrough(new DecompressionStream("deflate"))).text();
+      }).then(function (txt) {
+        build(JSON.parse(txt)); st.state = "ready";
+      }).catch(function (e) {
+        st.state = e.message === "none" ? "none" : "error"; st.err = e.message;
+      });
+    }
+    function setPass(p, fromSync) {
+      p = (p || "").trim();
+      return unlock(p).then(function () {
+        pass = p;
+        try { localStorage.setItem(PK, p); } catch (e) {}
+        if (!fromSync) Sync.changed();
+        return init();
+      }).then(function () { refresh(); });
+    }
+    function img(path) {
+      if (urls[path]) return urls[path];
+      urls[path] = fetch("data/g/" + path).then(function (r) { return r.arrayBuffer(); })
+        .then(function (b) { return dec(st.key, b); })
+        .then(function (plain) { return URL.createObjectURL(new Blob([plain], { type: "image/webp" })); });
+      return urls[path];
+    }
+    // 화면에 들어올 때 그림을 풀어 넣는다
+    var io = "IntersectionObserver" in window ? new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { io.unobserve(e.target); load(e.target); } });
+    }, { rootMargin: "600px" }) : null;
+    function load(el) {
+      img(el.dataset.g).then(function (u) { el.src = u; el.classList.add("on"); }, function () { el.alt = "그림을 못 불러옴"; });
+    }
+    function hydrate(root) {
+      (root || document).querySelectorAll("img[data-g]:not(.on)").forEach(function (el) { if (io) io.observe(el); else load(el); });
+    }
+    return {
+      init: init, setPass: setPass, hydrate: hydrate,
+      hasPass: function () { return !!pass; }, pass: function () { return pass; },
+      state: function () { return st.state; }, err: function () { return st.err; },
+      sets: function () { return st.state === "ready" ? st.sets : []; },
+      ex: function () { return st.state === "ready" ? st.ex : null; },
+      get: function (lid) { return st.byId[lid]; }, data: function () { return st.data; },
+      forget: function () { pass = null; try { localStorage.removeItem(PK); } catch (e) {} st.state = "locked"; st.sets = []; }
+    };
+  })();
+
   // ── 등록 · 부팅 ────────────────────────────────────
   function register(set) {
     set.topicMap = {};
@@ -211,7 +313,7 @@
         window.addEventListener("hashchange", route);
         route();
         Sync.show();
-        Sync.now().then(function (n) { if (n) refresh(); });
+        G.init().then(function () { refresh(); return Sync.now(); }).then(function (n) { if (n) refresh(); });
         return;
       }
       var s = document.createElement("script");
@@ -277,6 +379,8 @@
       a.classList.toggle("on", a.getAttribute("href") === "#/" + which);
     });
   }
+  function oxSets() { return ORDER.map(function (id) { return SETS[id]; }); }
+  function allSets() { var ex = G.ex(); return oxSets().concat(G.sets(), ex ? [ex] : []); }
   function dueItems(sets) {
     var out = [];
     sets.forEach(function (set) {
@@ -315,6 +419,12 @@
     if (parts[0] === "set" && SETS[decodeURIComponent(parts[1])]) return viewSet(SETS[decodeURIComponent(parts[1])]);
     if (parts[0] === "quiz" && session) return viewQuiz();
     if (parts[0] === "result" && session) return viewResult();
+    if (parts[0] === "g" && parts[1] && G.get(decodeURIComponent(parts[1]))) {
+      return parts[2] === "list" ? viewGRead(G.get(decodeURIComponent(parts[1]))) : viewGLecture(G.get(decodeURIComponent(parts[1])));
+    }
+    if (parts[0] === "g") return viewGList();
+    if (parts[0] === "ex") return viewEx();
+    if (parts[0] === "search") return viewSearch(decodeURIComponent(parts[1] || ""));
     if (parts[0] === "wrong") return viewWrong();
     if (parts[0] === "settings") return viewSettings();
     viewHome();
@@ -337,11 +447,43 @@
     if (b) b.onclick = function () { start(dueItems(sets), "instant", back, title, true); };
   }
 
+  function lockCard() {
+    var s = G.state();
+    if (s === "ready" || s === "none") return "";
+    if (s === "loading" || s === "idle") return '<div class="card note">기출 불러오는 중…</div>';
+    return '<div class="card lock"><b>🔒 기출 문제는 잠겨 있어요</b><p>출족·작년 시험은 공개 저장소에 암호화해서 올려 두었어요. ' +
+      (s === "error" ? "오류: " + esc(G.err()) + ". " : "") + '설정에서 키를 한 번 넣으면(또는 동기화를 켠 기기면 자동으로) 열려요.</p>' +
+      '<a class="btn primary" href="#/settings">설정 열기</a></div>';
+  }
+  function gTotals() {
+    var t = { q: 0, seen: 0, due: 0, lv: [0, 0, 0, 0, 0], total: 0 };
+    G.sets().forEach(function (s) {
+      var st = stats(s); t.q += st.total; t.total += st.total; t.seen += st.seen; t.due += st.due;
+      st.lv.forEach(function (v, i) { t.lv[i] += v; });
+    });
+    return t;
+  }
+
   function viewHome() {
     document.title = "의대 OX 퀴즈";
-    var all = ORDER.map(function (id) { return SETS[id]; });
-    var html = '<h1>강조된 것만, OX로.</h1><p class="sub">교수님이 짚어 준 범위만 골라 만든 OX 퀴즈. 맞히면 복습 간격이 늘고, 틀리거나 모르면 다시 돌아옵니다.</p>';
-    html += '<div style="margin-top:18px">' + reviewCard(all, "#/", "오늘 복습") + "</div>";
+    var all = oxSets();
+    var html = '<h1>오늘 할 공부</h1><p class="sub">기출(출족·작년 시험)과 자작 OX를 한곳에서. 맞히면 복습 간격이 늘고, 틀리거나 모르면 다시 돌아옵니다.</p>';
+    html += '<div style="margin-top:18px">' + reviewCard(allSets(), "#/", "오늘 복습") + "</div>";
+
+    var gd = G.data();
+    html += '<div class="subject-h"><h2>기출</h2><span class="meta">' + (gd ? esc(gd.subject + " · " + gd.term) : "") + "</span></div>";
+    html += lockCard();
+    if (G.state() === "ready") {
+      var t = gTotals();
+      var dd = dday({ examDate: gd.examDate });
+      html += '<a class="card setcard" href="#/g"><div class="row"><h3>' + esc(gd.subject) + ' 강의별 기출</h3>' + (dd ? '<b class="dd">' + dd + "</b>" : "") + "</div>" +
+        '<div class="meta">강의 ' + G.sets().length + "개 · 문항 " + t.q + " · 올해 출족 우선, 없으면 작년 출족</div>" +
+        '<div style="margin-top:10px">' + lvBar(t) + "</div>" +
+        '<div class="statline"><span>푼 문제 <b>' + t.seen + "</b>/" + t.q + "</span><span>완벽 <b>" + t.lv[4] + "</b></span>" +
+        (t.due ? '<span class="duepill">오늘 복습 ' + t.due + "</span>" : "") + "</div></a>";
+      html += '<div class="btnrow" style="margin-top:10px"><a class="btn ghost" href="#/ex">2025 실제 시험지</a><a class="btn ghost" href="#/search">🔎 기출 검색</a></div>';
+    }
+    html += '<div class="subject-h"><h2>자작 OX</h2><span class="meta">강조점만</span></div>';
 
     var groups = {};
     var gorder = [];
@@ -353,7 +495,7 @@
     if (!gorder.length) html += '<p class="empty">아직 세트가 없어요.</p>';
     gorder.forEach(function (g) {
       var p = g.split("|");
-      html += '<div class="subject-h"><h2>' + esc(p[0]) + '</h2><span class="meta">' + esc(p[1]) + '</span></div><div class="stack">';
+      html += '<p class="meta" style="margin:4px 0 8px">' + esc(p[0]) + " · " + esc(p[1]) + '</p><div class="stack">';
       groups[g].sort(function (a, b) { return (b.date || "").localeCompare(a.date || ""); }).forEach(function (s) {
         var st = stats(s);
         var dd = dday(s);
@@ -367,7 +509,7 @@
       html += "</div>";
     });
     app().innerHTML = html;
-    bindReview(all, "#/", "오늘 복습");
+    bindReview(allSets(), "#/", "오늘 복습");
   }
 
   // ── 세트 화면 ─────────────────────────────────────
@@ -478,13 +620,116 @@
     location.hash = "#/quiz";
     if (location.hash === "#/quiz") route();
   }
-  function ansLabel(v) { return v === "?" ? "모름" : v ? "O" : "X"; }
+  var CIRC = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳";
+  function circ(list) { return (list || []).map(function (n) { return CIRC[n - 1] || n; }).join(""); }
+  function ansLabel(v, it) {
+    if (v === "?") return "모름";
+    if (it && it.set.kind === "g") return Array.isArray(v) ? circ(v) : v ? "맞혔다고 표시" : "틀렸다고 표시";
+    return v ? "O" : "X";
+  }
+  function numSort(a) { return a.slice().sort(function (x, y) { return x - y; }); }
+  // 채점: true 맞음 / false 틀림 / "?" 모름 / null 정답 미상(기록 안 함)
+  function grade(it, v) {
+    if (v === "?") return "?";
+    var q = it.q;
+    if (it.set.kind !== "g") return v === q.a;
+    if (q.type === "short") return v === true;
+    if (!q.answer || !q.answer.length) return null;
+    v = v || [];
+    // 한 개 고르는 문제인데 정답이 여러 개면 '복수정답 인정'
+    if (q.type !== "multi" && q.answer.length > 1) return v.length === 1 && q.answer.indexOf(v[0]) >= 0;
+    return numSort(q.answer).join(",") === numSort(v).join(",");
+  }
+  var FLAGS = { oldprof: ["예전 교수 문제", "memo"], otherlec: ["다른 강의 범위", "memo"], outscope: ["올해 범위 밖", "memo"], uncertain: ["정답 확인 필요", "ex"] };
+  function gImgs(list) {
+    return (list || []).map(function (p) {
+      return '<img class="gimg" data-g="' + esc(p[0]) + '" width="' + p[1] + '" height="' + p[2] + '" alt="">';
+    }).join("");
+  }
+  function md(s) {
+    var out = [], list = false;
+    esc(s || "").split(/\n/).forEach(function (ln) {
+      ln = ln.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/\[외부\]/g, '<span class="ext">외부 지식</span>');
+      if (/^\s*[-•·]\s+/.test(ln)) {
+        if (!list) { out.push("<ul>"); list = true; }
+        out.push("<li>" + ln.replace(/^\s*[-•·]\s+/, "") + "</li>");
+      } else {
+        if (list) { out.push("</ul>"); list = false; }
+        if (ln.trim()) out.push("<p>" + ln + "</p>");
+      }
+    });
+    if (list) out.push("</ul>");
+    return out.join("");
+  }
+  function nChoices(q) { return q.ch && q.ch.length ? Math.min(20, q.ch.length) : Math.max(2, Math.min(20, q.nc || 5)); }
+  // 문제 글: 줄 단위, ' | '가 있는 줄이 이어지면 표로
+  function stemHTML(s) {
+    var out = [], rows = [];
+    function flush() {
+      if (!rows.length) return;
+      out.push('<div class="tbl"><table>' + rows.map(function (r, k) {
+        var tag = k === 0 && rows.length > 1 ? "th" : "td";
+        return "<tr>" + r.split(/\s*\|\s*/).map(function (c) { return "<" + tag + ">" + esc(c) + "</" + tag + ">"; }).join("") + "</tr>";
+      }).join("") + "</table></div>");
+      rows = [];
+    }
+    (s || "").split(/\n/).forEach(function (ln) {
+      if (/\s\|\s/.test(ln)) { rows.push(ln.replace(/^\s*\|\s*|\s*\|\s*$/g, "")); return; }
+      flush();
+      if (ln.trim()) out.push("<p>" + esc(ln) + "</p>");
+    });
+    flush();
+    return out.join("");
+  }
+  // q의 보기가 지문 목록과 같으면(①1 ②2… 형) 목록은 보기 버튼으로만 보여 준다
+  function gCaseHTML(c, q) {
+    if (!c) return "";
+    if (Array.isArray(c)) c = { img: c };
+    if (q && q.ch && c.list && q.ch.length === c.list.length) c = { stem: c.stem, list: [], figs: c.figs, orig: c.orig, img: c.img };
+    var body = c.stem || (c.list && c.list.length)
+      ? '<div class="stem">' + stemHTML(c.stem) + "</div>" +
+        (c.list && c.list.length ? '<div class="clist">' + c.list.map(function (x, k) { return "<p><b>" + (CIRC[k] || k + 1) + "</b> " + esc(x) + "</p>"; }).join("") + "</div>" : "") +
+        gImgs(c.figs) + (c.orig ? gImgs(c.img) : "")
+      : gImgs(c.img);
+    return body ? '<div class="gcase"><span class="note">공통 지문</span>' + body + "</div>" : "";
+  }
+  function gStemHTML(q) {
+    if (q.stem) {
+      return '<div class="stem">' + stemHTML(q.stem) + "</div>" + gImgs(q.figs) + (q.orig ? gImgs(q.qi) : "") +
+        (!q.orig && q.qi && q.qi.length ? '<details class="orig"><summary>원본 캡처 보기</summary>' + gImgs(q.qi) + "</details>" : "");
+    }
+    return q.qi && q.qi.length ? gImgs(q.qi) : '<p class="qtext">' + esc(q.t) + "</p>";
+  }
+  function gChoiceList(q) {
+    if (!q.ch || !q.ch.length) return "";
+    return '<div class="clist">' + q.ch.map(function (x, k) { return "<p><b>" + (CIRC[k] || k + 1) + "</b> " + esc(x) + "</p>"; }).join("") + "</div>";
+  }
+  function gAnswerStr(q) { return q.type === "short" ? (q.answerText || "모범답안 없음") : (q.answer && q.answer.length ? circ(q.answer) : "정답 미상"); }
+  function gMeta(set, q, mixed) {
+    var ex = set.lid === "EX2025";
+    var y = (q.years || []).join("·");
+    return '<div class="qmeta">' +
+      (mixed || ex ? '<span class="pill src">' + esc(ex ? q.prof + " 교수 · 2025 시험" : set.title) + "</span>" : "") +
+      (q.n != null ? '<span class="pill">' + (ex ? "" : "출족 ") + q.n + "번</span>" : "") +
+      (y && !ex ? '<span class="pill ex">' + esc(y) + "</span>" : "") +
+      (q.src && !ex ? '<span class="pill">' + esc(q.src) + "</span>" : "") +
+      (FLAGS[q.flag] ? '<span class="pill ' + FLAGS[q.flag][1] + '" title="' + esc(q.flagNote) + '">' + FLAGS[q.flag][0] + "</span>" : "") +
+      (q.type === "multi" ? '<span class="pill">모두 고르기</span>' : q.type === "short" ? '<span class="pill">주관식</span>' : "") + "</div>";
+  }
+  function gExplain(q) {
+    return (q.key ? '<p class="gkey">💡 ' + esc(q.key) + "</p>" : "") +
+      (q.easy ? '<div class="easy">' + md(q.easy) + "</div>" : '<p class="note">아직 쉬운 해설이 없어요. 아래 출족 원래 풀이를 참고하세요.</p>') +
+      (q.flagNote ? '<p class="note">⚠ ' + esc(q.flagNote) + "</p>" : "") +
+      (q.ref ? '<p class="note">근거: ' + esc(q.ref) + "</p>" : "") +
+      (q.ai && q.ai.length ? '<details class="orig"><summary>출족에 있던 원래 풀이 보기</summary>' + gImgs(q.ai) + "</details>" : "");
+  }
 
   function viewQuiz() {
     var S = session;
     if (S.done) { location.hash = "#/result"; return; }
     var it = S.items[S.i];
-    var set = it.set, q = it.q, t = set.topicMap[q.t];
+    var set = it.set, q = it.q, t = set.topicMap ? set.topicMap[q.t] : null;
+    var isG = set.kind === "g";
     var picked = S.ans[S.i];
     var revealed = S.grade === "instant" && picked !== undefined;
     var answered = S.ans.filter(function (a) { return a !== undefined; }).length;
@@ -497,6 +742,9 @@
       '<button class="iconbtn" id="starBtn" aria-pressed="' + isStar(set.id, q.id) + '" title="별표 — 헷갈려서 다시 볼 문제 표시 (S)" aria-label="별표">★</button></div>';
 
     var mixed = S.items.some(function (x) { return x.set !== set; });
+    if (isG) {
+      html += gQuizBody(S, it, picked, revealed, mixed);
+    } else {
     html += '<div class="card qcard"><div class="qmeta">' +
       '<span class="pill ' + (t && t.memo ? "memo" : "src") + '">' + esc(t ? t.name : "") + '</span>' +
       '<span class="pill">' + esc(srcLabel(set, t)) + '</span>' +
@@ -525,7 +773,9 @@
         (nextTxt ? '<span class="nextrv">' + nextTxt + "</span>" : "") + '</div>' +
         (q.why ? "<p>" + esc(q.why) + "</p>" : "") + "</div>";
       html += '<div class="qnav"><button class="btn primary" id="nextBtn">' + (S.i + 1 < S.items.length ? "다음 →" : "결과 보기") + "</button></div>";
-    } else if (r && S.grade === "instant") {
+    }
+    }
+    if (!revealed && r && S.grade === "instant") {
       html += '<p class="note" style="text-align:center;margin-top:10px">' + LEVELS[level(r)].name + " · 맞음 " + r.c + " · 틀림 " + r.w + (r.u ? " · 모름 " + r.u : "") + "</p>";
     }
     if (S.grade === "exam") {
@@ -536,15 +786,19 @@
         return '<button data-k="' + k + '" class="' + (S.ans[k] !== undefined ? "done " : "") + (k === S.i ? "cur" : "") + '">' + (k + 1) + "</button>";
       }).join("") + "</div>";
     }
-    html += '<p class="kbd"><kbd>O</kbd>·<kbd>1</kbd> 맞다 &nbsp; <kbd>X</kbd>·<kbd>2</kbd> 틀리다 &nbsp; <kbd>↓</kbd>·<kbd>3</kbd> 모르겠다 &nbsp; <kbd>→</kbd> 다음' + (S.grade === "exam" ? " · <kbd>←</kbd> 이전" : "") + ' &nbsp; <kbd>S</kbd> 별표</p>';
+    html += isG
+      ? '<p class="kbd"><kbd>1</kbd>~<kbd>9</kbd> 보기 고르기 &nbsp; <kbd>↓</kbd> 모르겠다 &nbsp; <kbd>Enter</kbd> 채점·답 보기 &nbsp; <kbd>→</kbd> 다음' + (S.grade === "exam" ? " · <kbd>←</kbd> 이전" : "") + ' &nbsp; <kbd>S</kbd> 별표</p>'
+      : '<p class="kbd"><kbd>O</kbd>·<kbd>1</kbd> 맞다 &nbsp; <kbd>X</kbd>·<kbd>2</kbd> 틀리다 &nbsp; <kbd>↓</kbd>·<kbd>3</kbd> 모르겠다 &nbsp; <kbd>→</kbd> 다음' + (S.grade === "exam" ? " · <kbd>←</kbd> 이전" : "") + ' &nbsp; <kbd>S</kbd> 별표</p>';
     app().innerHTML = html;
+    if (isG) G.hydrate(app());
 
     function answer(v) {
       if (revealed) return;
-      S.ans[S.i] = v;
+      S.ans[S.i] = v; S.sel = null; S.peek = false;
       if (S.grade === "instant") {
-        var ok = v === q.a;
-        record(set, q.id, ok ? true : v === "?" ? "?" : false); save();
+        var g = grade(it, v);
+        if (g !== null) { record(set, q.id, g === true ? true : g === "?" ? "?" : false); save(); }
+        var ok = g === true || g === null;
         var key = set.id + ":" + q.id;
         if (S.review && !ok && !S.againDone) S.againDone = {};
         if (S.review && !ok && !S.againDone[key]) {
@@ -559,42 +813,117 @@
     }
     function next() {
       if (S.grade === "instant" && !revealed) return;
+      S.sel = null; S.peek = false;
       if (S.i + 1 < S.items.length) { S.i++; viewQuiz(); window.scrollTo(0, 0); }
       else finish();
+    }
+    function move(d) { S.sel = null; S.peek = false; S.i += d; viewQuiz(); window.scrollTo(0, 0); }
+    function choose(c) {
+      if (revealed || !isG || q.type === "short") return;
+      var n = nChoices(q);
+      if (c < 1 || c > n) return;
+      if (q.type === "multi") {
+        S.sel = S.sel || (Array.isArray(picked) ? picked.slice() : []);
+        var i = S.sel.indexOf(c);
+        if (i >= 0) S.sel.splice(i, 1); else S.sel.push(c);
+        viewQuiz();
+      } else answer([c]);
+    }
+    function enter() {
+      if (revealed) return next();
+      if (!isG) return;
+      if (q.type === "multi" && S.sel && S.sel.length) return answer(numSort(S.sel));
+      if (q.type === "short" && !S.peek) { S.peek = true; viewQuiz(); }
     }
     document.querySelectorAll(".ox button").forEach(function (b) {
       b.onclick = function () { answer(b.dataset.v === "?" ? "?" : b.dataset.v === "1"); };
     });
+    document.querySelectorAll("[data-c]").forEach(function (b) { b.onclick = function () { choose(+b.dataset.c); }; });
+    document.querySelectorAll(".gbtns .idk, .choices .idk").forEach(function (b) { b.onclick = function () { answer("?"); }; });
+    var mb = document.getElementById("multiBtn"); if (mb) mb.onclick = enter;
+    var pk = document.getElementById("peekBtn"); if (pk) pk.onclick = enter;
+    document.querySelectorAll("[data-self]").forEach(function (b) { b.onclick = function () { answer(b.dataset.self === "1"); }; });
     var nb = document.getElementById("nextBtn"); if (nb) { nb.onclick = next; nb.focus({ preventScroll: true }); }
     document.getElementById("starBtn").onclick = function () { toggleStar(set.id, q.id); this.setAttribute("aria-pressed", isStar(set.id, q.id)); };
-    var pb = document.getElementById("prevBtn"); if (pb) pb.onclick = function () { S.i--; viewQuiz(); };
-    var sk = document.getElementById("skipBtn"); if (sk) sk.onclick = function () { S.i++; viewQuiz(); };
+    var pb = document.getElementById("prevBtn"); if (pb) pb.onclick = function () { move(-1); };
+    var sk = document.getElementById("skipBtn"); if (sk) sk.onclick = function () { move(1); };
     var sb = document.getElementById("submitBtn");
     if (sb) sb.onclick = function () {
       var left = S.items.length - answered;
       if (left && !confirm(left + "문제를 안 풀었어요. 그래도 채점할까요? (안 푼 문제는 기록에 남지 않아요)")) return;
       S.items.forEach(function (x, k) {
         var a = S.ans[k];
-        if (a !== undefined) record(x.set, x.q.id, a === x.q.a ? true : a === "?" ? "?" : false);
+        if (a === undefined) return;
+        var g = grade(x, a);
+        if (g !== null) record(x.set, x.q.id, g === true ? true : g === "?" ? "?" : false);
       });
       save(); finish();
     };
-    document.querySelectorAll(".dots button").forEach(function (b) { b.onclick = function () { S.i = +b.dataset.k; viewQuiz(); }; });
+    document.querySelectorAll(".dots button").forEach(function (b) { b.onclick = function () { S.sel = null; S.peek = false; S.i = +b.dataset.k; viewQuiz(); }; });
 
     document.onkeydown = function (e) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      var c = e.code;
-      if (c === "KeyO" || c === "Digit1" || c === "Numpad1") { e.preventDefault(); answer(true); }
-      else if (c === "KeyX" || c === "Digit2" || c === "Numpad2") { e.preventDefault(); answer(false); }
-      else if (c === "ArrowDown" || c === "Slash" || c === "Digit3" || c === "Numpad3") { e.preventDefault(); answer("?"); }
-      else if (c === "ArrowRight" || c === "Enter" || c === "Space") {
+      if (/INPUT|TEXTAREA/.test((e.target || {}).tagName || "")) return;
+      var c = e.code, dm = /^(?:Digit|Numpad)(\d)$/.exec(c);
+      if (isG && dm) { e.preventDefault(); choose(+dm[1]); return; }
+      if (!isG && (c === "KeyO" || c === "Digit1" || c === "Numpad1")) { e.preventDefault(); answer(true); }
+      else if (!isG && (c === "KeyX" || c === "Digit2" || c === "Numpad2")) { e.preventDefault(); answer(false); }
+      else if (c === "ArrowDown" || c === "Slash" || (!isG && (c === "Digit3" || c === "Numpad3"))) { e.preventDefault(); answer("?"); }
+      else if (c === "Enter" || c === "Space") { e.preventDefault(); enter(); }
+      else if (c === "ArrowRight") {
         if (revealed) { e.preventDefault(); next(); }
-        else if (S.grade === "exam" && S.i + 1 < S.items.length) { e.preventDefault(); S.i++; viewQuiz(); }
+        else if (S.grade === "exam" && S.i + 1 < S.items.length) { e.preventDefault(); move(1); }
       }
-      else if (c === "ArrowLeft" && S.grade === "exam" && S.i) { e.preventDefault(); S.i--; viewQuiz(); }
+      else if (c === "ArrowLeft" && S.grade === "exam" && S.i) { e.preventDefault(); move(-1); }
       else if (c === "KeyS") { document.getElementById("starBtn").click(); }
       else if (c === "Escape") { location.hash = S.back; }
     };
+  }
+
+  function gQuizBody(S, it, picked, revealed, mixed) {
+    var set = it.set, q = it.q;
+    var cs = q.case && set.L.cases && set.L.cases[q.case];
+    var html = '<div class="card qcard gq">' + gMeta(set, q, mixed) +
+      (S.again[S.i] ? '<span class="pill memo">한 번 더</span>' : "") +
+      gCaseHTML(cs, q) + gStemHTML(q) + "</div>";
+    if (q.type === "short") {
+      if (!revealed) {
+        if (!S.peek) html += '<div class="gbtns"><button class="btn primary" id="peekBtn">답 보기</button><button class="idk" data-v="?">모르겠다</button></div>';
+        else html += '<div class="verdict"><div class="head">모범답안</div><p>' + esc(q.answerText || "모범답안 없음 — 해설을 보고 판단") + '</p></div>' +
+          '<div class="gbtns"><button class="btn primary" data-self="1">맞혔다</button><button class="btn" data-self="0">틀렸다</button></div>';
+      }
+    } else {
+      var n = nChoices(q);
+      var mine = Array.isArray(picked) ? picked : [];
+      var sel = S.sel || (S.grade === "exam" ? mine : []);
+      var wide = q.ch && q.ch.length;
+      html += '<div class="choices' + (wide ? " wide" : n > 6 ? " many" : "") + '">';
+      for (var c = 1; c <= n; c++) {
+        var cl = "choice";
+        if (revealed) {
+          if ((q.answer || []).indexOf(c) >= 0) cl += " right";
+          else if (mine.indexOf(c) >= 0) cl += " wrong";
+        } else if (sel.indexOf(c) >= 0) cl += " pick";
+        html += '<button class="' + cl + '" data-c="' + c + '"' + (revealed ? " disabled" : "") + ">" +
+          (wide ? '<b class="cn">' + CIRC[c - 1] + "</b><span>" + esc(q.ch[c - 1] || "") + "</span>" : CIRC[c - 1]) + "</button>";
+      }
+      html += "</div>";
+      if (!revealed) {
+        html += '<div class="gbtns">' + (q.type === "multi" ? '<button class="btn primary" id="multiBtn"' + (sel.length ? "" : " disabled") + ">" + (sel.length ? sel.length + "개 골라 채점" : "모두 골라 주세요") + "</button>" : "") +
+          '<button class="idk" data-v="?">모르겠다</button></div>';
+      }
+    }
+    if (revealed) {
+      var g = grade(it, picked);
+      var nr = rec(set.id, q.id);
+      var nextTxt = g === null ? "정답이 확실하지 않아 기록하지 않았어요" : nr && nr.d != null ? (nr.d <= today() ? (S.review ? "이번 복습 끝에 한 번 더 나와요" : "오늘 복습에 다시 나와요") : "다음 복습 " + dLabel(nr.d - today())) : "";
+      var head = g === true ? "정답" : g === "?" ? "모름" : g === null ? "채점 보류" : "오답";
+      html += '<div class="verdict ' + (g === true ? "ok" : g === null ? "" : "ng") + '"><div class="head">' + head + " · 답 " + esc(gAnswerStr(q)) +
+        (nextTxt ? '<span class="nextrv">' + nextTxt + "</span>" : "") + "</div></div>";
+      html += '<div class="card gexp">' + gExplain(q) + "</div>";
+      html += '<div class="qnav"><button class="btn primary" id="nextBtn">' + (S.i + 1 < S.items.length ? "다음 →" : "결과 보기") + "</button></div>";
+    }
+    return html;
   }
 
   function finish() {
@@ -611,18 +940,20 @@
     S.items.forEach(function (x, k) {
       var a = S.ans[k];
       if (a === undefined || S.again[k]) return; // 점수는 첫 시도만
+      var g = grade(x, a);
+      if (g === null) return;
       tot++;
-      var key = x.set.id + "|" + x.q.t;
-      byT[key] = byT[key] || { name: x.set.topicMap[x.q.t].name, ok: 0, n: 0 };
+      var key = x.set.id + "|" + (x.set.kind === "g" ? "" : x.q.t);
+      byT[key] = byT[key] || { name: x.set.kind === "g" ? x.set.title : x.set.topicMap[x.q.t].name, ok: 0, n: 0 };
       byT[key].n++;
-      if (a === x.q.a) { ok++; byT[key].ok++; }
+      if (g === true) { ok++; byT[key].ok++; }
       else {
-        if (a === "?") unk++;
+        if (g === "?") unk++;
         if (!seen[x.set.id + ":" + x.q.id]) { seen[x.set.id + ":" + x.q.id] = 1; wrong.push({ x: x, a: a }); }
       }
     });
     var p = pct(ok, tot);
-    var up = upcoming(ORDER.map(function (id) { return SETS[id]; }));
+    var up = upcoming(allSets());
     var html = '<a class="crumb" href="' + S.back + '">← ' + esc(S.title) + '</a><h1>결과</h1>' +
       '<div class="card score" style="margin-top:12px"><div class="ring" style="--p:' + p + '"><span>' + p + '%</span></div>' +
       '<div><div style="font-size:18px;font-weight:700">' + ok + " / " + tot + ' 맞음</div><p class="sub">' +
@@ -649,6 +980,7 @@
       html += '<h2>틀리거나 모른 문제</h2><div class="wlist">' + wrong.map(function (w) { return witem(w.x.set, w.x.q, w.a); }).join("") + "</div>";
     }
     app().innerHTML = html;
+    G.hydrate(app());
     var rw = document.getElementById("retryWrong");
     if (rw) rw.onclick = function () { start(wrong.map(function (w) { return w.x; }), S.grade, S.back, S.title); };
     var firsts = S.items.filter(function (_, k) { return !S.again[k]; });
@@ -656,6 +988,13 @@
   }
 
   function witem(set, q, picked) {
+    if (set.kind === "g") {
+      return '<div class="card witem">' + gMeta(set, q, true) +
+        '<details class="wq"><summary>문제 보기</summary>' + gStemHTML(q) + gChoiceList(q) + "</details>" +
+        '<p class="q">' + esc((q.t || "").slice(0, 140)) + (q.t && q.t.length > 140 ? "…" : "") + "</p>" +
+        '<div class="ans">정답 <b>' + esc(gAnswerStr(q)) + "</b>" + (picked !== undefined ? " · 내 답 <b>" + esc(ansLabel(picked, { set: set })) + "</b>" : "") + "</div>" +
+        (q.key ? '<p class="why">💡 ' + esc(q.key) + "</p>" : "") + "</div>";
+    }
     var t = set.topicMap[q.t];
     return '<div class="card witem"><div class="qmeta"><span class="pill src">' + esc(t.name) + '</span><span class="pill">' + esc(srcLabel(set, t)) + "</span>" +
       (q.ex ? '<span class="pill ex">기출 ' + esc(q.ex) + "</span>" : "") + "</div>" +
@@ -665,16 +1004,234 @@
       (q.why ? '<p class="why">' + esc(q.why) + "</p>" : "") + "</div>";
   }
 
+  // ── 기출 화면들 ───────────────────────────────────
+  var WD = ["일", "월", "화", "수", "목", "금", "토"];
+  var gOpts = {};
+  function dateLabel(md) {
+    var p = md.split("/"), y = (G.data() && G.data().examDate || "2026").slice(0, 4);
+    return md + " (" + WD[new Date(+y, +p[0] - 1, +p[1]).getDay()] + ")";
+  }
+  function srcKind(L) {
+    var k = {};
+    (L.sources || []).forEach(function (s) { k[s.kind] = 1; });
+    return Object.keys(k).join("·");
+  }
+  function isOff(q) { return /oldprof|otherlec|outscope/.test(q.flag || ""); }
+
+  function viewGList() {
+    document.title = "기출 — 의대 OX";
+    if (G.state() !== "ready") { app().innerHTML = '<a class="crumb" href="#/">← 홈</a><h1>기출</h1>' + lockCard(); return; }
+    var d = G.data(), sets = G.sets();
+    var html = '<a class="crumb" href="#/">← 홈</a><h1>' + esc(d.subject) + " 기출</h1>" +
+      '<p class="sub">강의마다 올해 출족이 있으면 올해 것, 없으면 작년 출족을 넣었어요. 교수님이 바뀐 강의와 예전 교수 문제는 표시해 뒀어요. <b class="dd">' + dday({ examDate: d.examDate }) + "</b></p>";
+    html += '<div style="margin-top:14px">' + reviewCard(sets, "#/g", "기출 복습") + "</div>";
+    html += '<div class="btnrow" style="margin-top:10px"><a class="btn ghost" href="#/ex">2025 실제 시험지</a><a class="btn ghost" href="#/search">🔎 검색</a></div>';
+    var byDate = {}, dates = [];
+    sets.forEach(function (s) { var k = s.L.date; if (!byDate[k]) { byDate[k] = []; dates.push(k); } byDate[k].push(s); });
+    dates.forEach(function (dt) {
+      html += '<h2 class="dateh">' + dateLabel(dt) + '</h2><div class="stack">';
+      byDate[dt].forEach(function (s) {
+        var L = s.L, st = stats(s);
+        var old = L.questions.filter(function (q) { return q.flag === "oldprof"; }).length;
+        html += '<a class="card lrow" href="#/g/' + encodeURIComponent(L.id) + '">' +
+          '<span class="period">' + esc(L.period || "–") + '</span><div class="lmain"><div class="ltitle">' + esc(L.title) + "</div>" +
+          '<div class="meta">' + esc(L.prof) + " · " + st.total + "문항 · " + esc(srcKind(L)) +
+          (L.newProf ? ' · <b class="dd">올해 교수 바뀜</b>' : old ? " · 예전 교수 문제 " + old : "") + (!L.exam ? ' · <b class="dd">시험 X</b>' : "") +
+          (st.due ? ' · <span class="duepill">복습 ' + st.due + "</span>" : "") + "</div>" +
+          '<div style="margin-top:6px">' + lvBar(st) + "</div></div></a>";
+      });
+      html += "</div>";
+    });
+    app().innerHTML = html;
+    bindReview(sets, "#/g", "기출 복습");
+  }
+
+  function gPick(s, o) {
+    return s.questions.filter(function (q) {
+      if (o.scope === "now" && isOff(q)) return false;
+      var r = rec(s.id, q.id);
+      if (o.filter === "unseen") return !r;
+      if (o.filter === "due") return isDue(s.id, q.id);
+      if (o.filter === "weak") return r && level(r) <= 2;
+      if (o.filter === "star") return isStar(s.id, q.id);
+      return true;
+    });
+  }
+
+  function viewGLecture(s) {
+    if (s.lid === "EX2025") { location.hash = "#/ex"; return; }
+    var L = s.L, n = L.note || {}, back = "#/g/" + encodeURIComponent(L.id);
+    document.title = L.title + " — 기출";
+    var o = gOpts[s.id] = gOpts[s.id] || { filter: "all", scope: "all", order: "seq", grade: "instant" };
+    var st = stats(s);
+    var exq = (G.ex() ? G.ex().questions : []).filter(function (q) { return q.lecture === L.id; });
+    var ox = oxSets().filter(function (x) { return (x.gLectures || []).indexOf(L.id) >= 0; });
+    var off = s.questions.filter(isOff).length;
+    var dd = dday(s);
+
+    var html = '<a class="crumb" href="#/g">← 기출 목록</a><h1>' + esc(L.title) + "</h1>" +
+      '<p class="sub">' + esc(dateLabel(L.date)) + (L.period ? " " + esc(L.period) + "교시" : "") + " · " + esc(L.prof) + " 교수님" +
+      (!L.exam ? ' · <b class="dd">올해 시험 X</b>' : "") + (dd ? ' · <b class="dd">' + dd + "</b>" : "") + "</p>" +
+      '<p class="note">출처: ' + (L.sources || []).map(function (x) { return esc(x.kind + " " + x.file + (x.pages ? " " + x.pages[0] + "~" + x.pages[1] + "쪽" : "")); }).join(", ") + "</p>" +
+      '<div class="card" style="margin-top:12px">' + lvBar(st) + lvLegend(st) + "</div>" +
+      '<div style="margin-top:10px">' + reviewCard([s], back, L.title) + "</div>";
+
+    html += '<h2>교수·출제 분석</h2><div class="card analysis">';
+    if (n.profHistory || n.examTip || n.yearNotes) {
+      if (n.profHistory) html += "<h3>교수 변경</h3>" + md(n.profHistory);
+      if (n.examTip) html += "<h3>올해 시험 정보·경향</h3>" + md(n.examTip);
+      if (n.yearNotes) html += "<h3>연도·범위 주의</h3>" + md(n.yearNotes);
+    } else html += '<p class="note">분석 준비 중이에요. 아래 출족 코멘트 원문을 참고하세요.</p>';
+    if (off) html += '<p class="note">이 강의 기출 중 <b>' + off + "문항</b>은 예전 교수·다른 강의·올해 범위 밖으로 표시돼 있어요.</p>";
+    if (L.comment) html += '<details class="orig"><summary>출족 제작자 코멘트 원문</summary><p class="pre">' + esc(L.comment) + "</p></details>";
+    html += "</div>";
+
+    if (n.summary && n.summary.length) {
+      html += '<h2>빈출 개념</h2><div class="card"><ul class="sumlist">' + n.summary.map(function (x) { return "<li>" + md(x).replace(/^<p>|<\/p>$/g, "") + "</li>"; }).join("") + "</ul></div>";
+    }
+    if (ox.length || exq.length) {
+      html += '<div class="btnrow" style="margin-top:14px">' +
+        ox.map(function (x) { return '<a class="btn ghost" href="#/set/' + encodeURIComponent(x.id) + '">자작 OX · ' + esc(x.title) + "</a>"; }).join("") +
+        (exq.length ? '<button class="btn ghost" id="exHere">2025 시험 이 강의 ' + exq.length + "문항</button>" : "") + "</div>";
+    }
+
+    html += '<h2>골라서 풀기</h2><div class="card opts">' +
+      seg("filter", "문항", [["all", "전체"], ["unseen", "안 푼 것"], ["due", "복습 차례"], ["weak", "약한 것"], ["star", "★ 별표"]], o.filter) +
+      (off ? seg("scope", "범위", [["all", "전부"], ["now", "지금 교수·범위만 (" + off + "개 빼기)"]], o.scope) : "") +
+      seg("order", "순서", [["seq", "출족 순서"], ["shuffle", "섞기"]], o.order) +
+      seg("grade", "채점", [["instant", "바로 확인"], ["exam", "시험처럼 (끝나고 채점)"]], o.grade) + "</div>";
+    html += '<div class="startbar btnrow"><button class="btn primary" id="startBtn" style="flex:2"></button><a class="btn" style="flex:1;text-align:center;text-decoration:none" href="' + back + '/list">쫙 보기</a></div>';
+    app().innerHTML = html;
+    bindReview([s], back, L.title);
+
+    function refreshBtn() {
+      var k = gPick(s, o).length, b = document.getElementById("startBtn");
+      b.textContent = k ? k + "문제 풀기" : "조건에 맞는 문제가 없어요"; b.disabled = !k;
+    }
+    document.querySelectorAll(".opts .seg").forEach(function (g) {
+      g.onclick = function (e) {
+        var b = e.target.closest("button"); if (!b) return;
+        o[g.dataset.k] = b.dataset.v;
+        g.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b); });
+        refreshBtn();
+      };
+    });
+    document.getElementById("startBtn").onclick = function () {
+      var qs = gPick(s, o);
+      if (o.order === "shuffle") qs = shuffle(qs.slice());
+      start(qs.map(function (q) { return { set: s, q: q }; }), o.grade, back, L.title, o.filter === "due");
+    };
+    var eh = document.getElementById("exHere");
+    if (eh) eh.onclick = function () { start(exq.map(function (q) { return { set: G.ex(), q: q }; }), "instant", back, L.title); };
+    refreshBtn();
+  }
+
+  // 쫙 보기: 문제를 쭉 넘겨 보고 답·해설은 필요할 때만 펼친다
+  function viewGRead(s) {
+    var L = s.L, back = "#/g/" + encodeURIComponent(L.id);
+    document.title = L.title + " 쫙 보기 — 기출";
+    var html = '<a class="crumb" href="' + back + '">← ' + esc(L.title) + "</a><h1>쫙 보기</h1>" +
+      '<p class="sub">문제를 쭉 넘겨 보고, 필요할 때만 답·해설을 펼쳐요. (여기서 본 건 기록에 안 남아요)</p>' +
+      '<div class="btnrow" style="margin:12px 0"><button class="btn" id="openAll">답·해설 전부 펼치기</button></div><div class="wlist">';
+    var shown = {};
+    s.questions.forEach(function (q) {
+      var cs = q.case && !shown[q.case] && L.cases && L.cases[q.case];
+      if (q.case) shown[q.case] = 1;
+      html += '<div class="card gq readq">' + gMeta(s, q, false) +
+        gCaseHTML(cs, q) + gStemHTML(q) + gChoiceList(q) +
+        '<details class="rv"><summary>답·해설 <b>' + esc(gAnswerStr(q)) + "</b></summary>" + gExplain(q) + "</details></div>";
+    });
+    html += "</div>";
+    app().innerHTML = html;
+    G.hydrate(app());
+    document.getElementById("openAll").onclick = function () {
+      var open = this.dataset.open !== "1";
+      document.querySelectorAll("details.rv").forEach(function (d) { d.open = open; });
+      this.dataset.open = open ? "1" : "0";
+      this.textContent = open ? "답·해설 전부 접기" : "답·해설 전부 펼치기";
+    };
+  }
+
+  function viewEx() {
+    document.title = "2025 시험 — 기출";
+    var ex = G.ex();
+    if (!ex) { app().innerHTML = '<a class="crumb" href="#/">← 홈</a><h1>2025 실제 시험지</h1>' + lockCard(); return; }
+    var o = gOpts.EX = gOpts.EX || { grade: "exam" };
+    var byP = {}, profs = [];
+    ex.questions.forEach(function (q) { if (!byP[q.prof]) { byP[q.prof] = []; profs.push(q.prof); } byP[q.prof].push(q); });
+    var st = stats(ex);
+    var html = '<a class="crumb" href="#/g">← 기출 목록</a><h1>2025 실제 시험지</h1>' +
+      '<p class="sub">작년 내분비 1차 시험 ' + ex.questions.length + "문항 (객관식·주관식). 교수별로 나눠 풀거나 통째로 풀 수 있어요. 올해 교수가 바뀐 과목은 참고만.</p>" +
+      '<div class="card" style="margin-top:12px">' + lvBar(st) + lvLegend(st) + "</div>" +
+      '<div class="card opts" style="margin-top:12px">' + seg("grade", "채점", [["exam", "시험처럼 (끝나고 채점)"], ["instant", "바로 확인"]], o.grade) + "</div>" +
+      '<div class="btnrow" style="margin-top:12px"><button class="btn primary" data-p="*">전체 ' + ex.questions.length + "문항 풀기</button></div>" +
+      '<h2>교수별</h2><div class="stack">';
+    profs.forEach(function (p) {
+      var qs = byP[p], ps = stats(ex, qs);
+      var mc = qs.filter(function (q) { return q.type !== "short"; }).length;
+      var lecs = {};
+      qs.forEach(function (q) { var s = q.lecture && G.get(q.lecture); if (s) lecs[q.lecture] = s.title; });
+      html += '<div class="card exrow"><div class="lmain"><div class="ltitle">' + esc(p) + " 교수님 <span class=\"meta\">객 " + mc + (qs.length - mc ? " · 주 " + (qs.length - mc) : "") + "</span></div>" +
+        '<div class="meta">' + Object.keys(lecs).map(function (k) { return '<a href="#/g/' + encodeURIComponent(k) + '">' + esc(lecs[k]) + "</a>"; }).join(", ") + "</div>" +
+        '<div style="margin-top:6px">' + lvBar(ps) + '</div></div><button class="btn" data-p="' + esc(p) + '">풀기</button></div>';
+    });
+    html += "</div>";
+    app().innerHTML = html;
+    document.querySelector(".opts .seg").onclick = function (e) {
+      var b = e.target.closest("button"); if (!b) return;
+      o.grade = b.dataset.v;
+      this.querySelectorAll("button").forEach(function (x) { x.setAttribute("aria-pressed", x === b); });
+    };
+    document.querySelectorAll("[data-p]").forEach(function (b) {
+      b.onclick = function () {
+        var qs = b.dataset.p === "*" ? ex.questions : byP[b.dataset.p];
+        start(qs.map(function (q) { return { set: ex, q: q }; }), o.grade, "#/ex", "2025 시험");
+      };
+    });
+  }
+
+  function viewSearch(term) {
+    document.title = "기출 검색 — 의대 OX";
+    if (G.state() !== "ready") { app().innerHTML = '<a class="crumb" href="#/">← 홈</a><h1>기출 검색</h1>' + lockCard(); return; }
+    app().innerHTML = '<a class="crumb" href="#/g">← 기출 목록</a><h1>기출 검색</h1>' +
+      '<div class="tokenrow" style="margin-top:12px"><input id="sq" type="search" placeholder="예: Sheehan, 칼시토닌, ACTH 자극검사" value="' + esc(term) + '"></div>' +
+      '<p class="note" id="sn"></p><div class="wlist" id="sr"></div>';
+    var all = [];
+    G.sets().concat([G.ex()]).forEach(function (s) { s.questions.forEach(function (q) { all.push({ set: s, q: q }); }); });
+    var inp = document.getElementById("sq"), timer = null;
+    function run() {
+      var v = inp.value.trim().toLowerCase();
+      history.replaceState(null, "", "#/search/" + encodeURIComponent(inp.value.trim()));
+      var box = document.getElementById("sr");
+      if (!v) { box.innerHTML = ""; document.getElementById("sn").textContent = "문제·해설·강의 이름에서 찾아요. 띄어쓰기로 여러 단어."; return; }
+      var terms = v.split(/\s+/);
+      var hit = all.filter(function (x) {
+        var h = ((x.q.t || "") + " " + (x.q.key || "") + " " + (x.q.easy || "") + " " + (x.q.answerText || "") + " " + x.set.title).toLowerCase();
+        return terms.every(function (t) { return h.indexOf(t) >= 0; });
+      });
+      document.getElementById("sn").textContent = hit.length + "문항" + (hit.length > 60 ? " (앞 60개만 보여요)" : "");
+      box.innerHTML = hit.slice(0, 60).map(function (x, k) {
+        return '<div class="card witem sres" data-k="' + k + '">' + gMeta(x.set, x.q, true) +
+          '<p class="q">' + esc((x.q.t || "").slice(0, 160)) + "</p>" + (x.q.key ? '<p class="why">💡 ' + esc(x.q.key) + "</p>" : "") + "</div>";
+      }).join("");
+      box.querySelectorAll(".sres").forEach(function (el) {
+        el.onclick = function () { var x = hit[+el.dataset.k]; start([x], "instant", "#/search/" + encodeURIComponent(inp.value.trim()), "검색"); };
+      });
+    }
+    inp.oninput = function () { clearTimeout(timer); timer = setTimeout(run, 200); };
+    run();
+    inp.focus();
+  }
+
   // ── 오답노트 ──────────────────────────────────────
   function viewWrong() {
     document.title = "오답노트 — 의대 OX";
     var wrong = [], stars = [];
-    ORDER.forEach(function (id) {
-      var set = SETS[id];
+    allSets().forEach(function (set) {
       set.questions.forEach(function (q) {
-        var r = rec(id, q.id);
+        var r = rec(set.id, q.id);
         if (r && r.l === 0) wrong.push({ set: set, q: q, r: r });
-        if (isStar(id, q.id)) stars.push({ set: set, q: q });
+        if (isStar(set.id, q.id)) stars.push({ set: set, q: q });
       });
     });
     wrong.sort(function (a, b) { return (b.r.w + (b.r.u || 0)) - (a.r.w + (a.r.u || 0)) || b.r.t - a.r.t; });
@@ -687,6 +1244,7 @@
       return witem(w.set, w.q).replace('<p class="q">', '<p class="meta" style="margin:6px 0 0">' + esc(w.set.professor) + " · 틀림 " + w.r.w + "회" + (w.r.u ? " · 모름 " + w.r.u + "회" : "") + " · 맞음 " + w.r.c + '회</p><p class="q">');
     }).join("") + "</div>";
     app().innerHTML = html;
+    G.hydrate(app());
     var mk = function (arr) { return shuffle(arr.map(function (w) { return { set: w.set, q: w.q }; })); };
     document.getElementById("doWrong").onclick = function () { start(mk(wrong), "instant", "#/wrong", "오답노트", true); };
     document.getElementById("doStar").onclick = function () { start(mk(stars), "instant", "#/wrong", "오답노트"); };
@@ -716,6 +1274,19 @@
     }
     html += "</div>";
 
+    html += '<h2>기출 잠금</h2><div class="card">';
+    if (G.state() === "ready") {
+      var gd = G.data();
+      html += '<p style="margin-top:0"><b>열림</b> · 강의 ' + G.sets().length + "개 · 2025 시험 " + G.ex().questions.length + '문항<br><span class="note">데이터 만든 시각 ' + esc(gd.built) + "</span></p>" +
+        '<div class="btnrow"><button class="btn ghost" id="gForget">이 기기에서 키 지우기</button></div>';
+    } else {
+      html += '<p style="margin-top:0">출족·작년 시험은 학교 자료라 공개 저장소에 <b>암호화</b>해서 올려 두었어요. 키를 한 번 넣으면 열리고, 동기화가 켜져 있으면 다른 기기에는 자동으로 전달돼요.</p>' +
+        '<p class="note">키 위치: 공부 PC의 <b>OX퀴즈\\_build\\KEY.txt</b> (또는 동기화 gist의 med-ox-quiz-key.txt)</p>' +
+        '<div class="tokenrow"><input id="gk" type="password" autocomplete="off" spellcheck="false" placeholder="기출 키"><button class="btn primary" id="gOpen">열기</button></div>' +
+        '<p class="note" id="gMsg">' + (G.state() === "error" ? "오류: " + esc(G.err()) : "") + "</p>";
+    }
+    html += "</div>";
+
     html += '<h2>화면</h2><div class="card">' + seg("theme", "테마", [["auto", "기기 설정 따름"], ["light", "밝게"], ["dark", "어둡게"]], th) + "</div>" +
       '<h2>백업</h2><div class="card"><p class="note" style="margin-top:0">기록 파일로 내보내기·불러오기 (동기화와 별개, 지금 기록 ' + n + "문항)</p>" +
       '<div class="btnrow"><button class="btn" id="exp">내보내기 (.json)</button><button class="btn" id="imp">불러오기</button><input type="file" id="impFile" accept=".json,application/json" class="hidden"></div></div>' +
@@ -736,6 +1307,19 @@
         document.getElementById("syncMsg").textContent = "연결 실패: " + e.message;
       });
     };
+    var go = document.getElementById("gOpen");
+    if (go) go.onclick = function () {
+      var v = document.getElementById("gk").value;
+      if (!v.trim()) return;
+      go.disabled = true;
+      document.getElementById("gMsg").textContent = "여는 중…";
+      G.setPass(v).then(function () { viewSettings(); }).catch(function (e) {
+        go.disabled = false;
+        document.getElementById("gMsg").textContent = "못 열었어요: " + e.message;
+      });
+    };
+    var gf = document.getElementById("gForget");
+    if (gf) gf.onclick = function () { if (confirm("이 기기에서 기출 키를 지울까요? (기록은 남아요)")) { G.forget(); viewSettings(); } };
     var sn = document.getElementById("syncNow"); if (sn) sn.onclick = function () { Sync.now(); };
     var so = document.getElementById("syncOff");
     if (so) so.onclick = function () { if (confirm("이 기기만 연결을 끊을까요? (기록은 남아요)")) Sync.disconnect(); };

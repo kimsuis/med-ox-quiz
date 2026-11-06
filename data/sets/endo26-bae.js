@@ -13,6 +13,7 @@ QUIZ.register({
   date: "2026-11-05",
   slot: "7~9교시",
   examDate: "2026-11-13",
+  gLectures: ["L1105_7", "L1105_8"],
   examInfo: "전체 객관식 6문제 · R형 없음 · 시수·파트별 고정 배분 아님 · 강조 안 한 데서 1문제 정도",
   lectures: {
     P1: "1번 ppt · 췌장호르몬1",

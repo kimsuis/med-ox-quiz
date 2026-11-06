@@ -194,6 +194,63 @@ details.sum li { margin: 4px 0; }
 .empty { text-align: center; color: var(--mute); padding: 40px 10px; }
 .note { font-size: 13px; color: var(--mute); }
 
+/* 기출 */
+.lock { border-color: color-mix(in srgb, var(--amber) 40%, var(--line)); background: var(--amber-soft); }
+.lock p { font-size: 14px; margin: 6px 0 12px; }
+.dateh { font-size: 15px; color: var(--mute); margin: 24px 0 8px; }
+.lrow { display: flex; gap: 12px; align-items: flex-start; text-decoration: none; color: inherit; padding: 12px 14px; }
+.lrow:hover { border-color: var(--teal); }
+.period { flex: none; min-width: 34px; height: 26px; padding: 0 6px; border-radius: 8px; background: var(--teal-soft); color: var(--teal); font-weight: 800; font-size: 13px; display: grid; place-items: center; }
+.lmain { flex: 1; min-width: 0; }
+.ltitle { font-weight: 700; }
+.exrow { display: flex; align-items: center; gap: 12px; }
+.analysis h3 { font-size: 14px; margin: 14px 0 4px; color: var(--teal); }
+.analysis h3:first-child { margin-top: 0; }
+.analysis p, .easy p { margin: 4px 0; }
+.analysis ul, .easy ul { margin: 4px 0; padding-left: 20px; }
+.sumlist { margin: 0; padding-left: 20px; }
+.sumlist li { margin: 4px 0; }
+.pre { white-space: pre-wrap; font-size: 13px; color: var(--mute); }
+.gq { gap: 10px; }
+.gimg { display: block; width: 100%; height: auto; max-width: 560px; margin: 0 auto; border-radius: 6px; background: #fff; opacity: 0; transition: opacity .2s; }
+.gimg.on { opacity: 1; }
+:root[data-theme="dark"] .gimg.on { filter: brightness(.88); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .gimg.on { filter: brightness(.88); } }
+.gcase { border: 1px dashed var(--line); border-radius: 10px; padding: 8px; display: grid; gap: 6px; }
+.choices { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 14px; }
+.choices.many { grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); }
+.stem p { margin: 0 0 6px; font-size: 17px; line-height: 1.7; }
+.stem p:first-child { font-weight: 500; }
+.tbl { overflow-x: auto; margin: 6px 0 10px; }
+.tbl table { border-collapse: collapse; font-size: 14.5px; min-width: 60%; }
+.tbl th, .tbl td { border: 1px solid var(--line); padding: 5px 9px; text-align: left; vertical-align: top; }
+.tbl th { background: var(--soft); font-weight: 600; }
+.clist p { margin: 3px 0; font-size: 15px; }
+.clist b { color: var(--teal); margin-right: 4px; }
+.choices.wide { grid-template-columns: 1fr; gap: 8px; }
+.choices.wide .choice { height: auto; min-height: 50px; font-size: 16px; font-weight: 500; text-align: left; padding: 10px 14px; display: flex; gap: 10px; align-items: flex-start; border-radius: 12px; line-height: 1.5; }
+.choices.wide .choice .cn { font-size: 18px; font-weight: 800; flex: none; }
+.choice { border: 2px solid var(--line); background: var(--card); border-radius: 14px; height: 58px; font-size: 24px; font-weight: 700; }
+.choice:hover:not(:disabled) { border-color: var(--teal); }
+.choice.pick { border-color: var(--teal); background: var(--teal-soft); color: var(--teal); }
+.choice.right { border-color: var(--o); background: var(--teal-soft); color: var(--o); }
+.choice.wrong { border-color: var(--x); background: var(--brick-soft); color: var(--x); }
+.choice:disabled:not(.right):not(.wrong) { opacity: .45; }
+.gbtns { display: flex; gap: 8px; margin-top: 10px; }
+.gbtns > * { flex: 1; }
+.gbtns .idk { grid-column: auto; }
+.gexp { margin-top: 12px; }
+.gkey { margin: 0 0 8px; font-weight: 700; color: var(--teal); }
+.easy { font-size: 15.5px; line-height: 1.75; }
+.ext { font-size: 11px; padding: 1px 6px; border-radius: 99px; background: var(--amber-soft); color: var(--amber); white-space: nowrap; }
+details.orig, details.rv, details.wq { margin-top: 10px; }
+details.orig summary, details.rv summary, details.wq summary { cursor: pointer; color: var(--teal); font-size: 14px; font-weight: 600; }
+details.orig[open] summary, details.rv[open] summary { margin-bottom: 8px; }
+details.rv { border-top: 1px dashed var(--line); padding-top: 10px; }
+.readq .qmeta { margin-bottom: 2px; }
+.sres { cursor: pointer; }
+.sres:hover { border-color: var(--teal); }
+
 /* 모르겠다 */
 .idk {
   grid-column: 1 / -1; border: 1.5px dashed var(--line); background: transparent; border-radius: 14px; height: 48px;
