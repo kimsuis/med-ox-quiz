@@ -1,14 +1,15 @@
 /* 의대 OX 퀴즈 — 세트 파일(data/sets/*.js)이 QUIZ.register()로 문제를 등록한다.
    풀이 기록은 localStorage에 두고, 동기화를 켜면 내 GitHub 비밀 gist와 합쳐서 모든 기기가 같은 기록을 본다.
    합치는 규칙: 문항·별표마다 더 나중(t)에 바뀐 쪽이 이김, 초기화(z)는 그 시각 이전 기록을 지움.
-   복습: 문항마다 단계(b)와 다음 복습일(d, 날짜 번호)을 둔다. 맞히면 단계↑·간격↑, 틀리거나 모르면 0단계·오늘 다시. */
+   복습(안키 방식): 문항마다 간격(iv, 일)·쉬움 정도(ef)·다음 복습일(d, 날짜 번호).
+   안다 → 간격 1→3→간격×ef / 모르겠다 → 간격×1.2(최소 1일)·ef↓ / 틀렸다 → 오늘 다시·ef↓. 시험 전날을 넘겨 미루지 않음. */
 (function () {
   "use strict";
 
   var SETS = {};
   var ORDER = [];
   var KEY = "mox:v1";
-  var INTERVAL = [0, 1, 3, 7, 14, 30, 60]; // 단계별 다음 복습까지 날짜 수
+  var INTERVAL = [0, 1, 3, 7, 14, 30, 60]; // 예전 단계(b) 기록을 간격으로 옮길 때만 씀
   var LEVELS = [
     { name: "새 문제", cls: "lv-new" },
     { name: "다시 익히는 중", cls: "lv0" },
@@ -35,7 +36,58 @@
   }
   function save() {
     saveLocal();
+    backupDaily();
     Sync.changed();
+  }
+  // 하루 한 번 기록 스냅샷을 따로 남긴다 (최근 7일). 설정에서 되살릴 수 있음
+  var BAK = "mox:bak:";
+  function backups() {
+    var out = [];
+    try {
+      for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (k && k.indexOf(BAK) === 0) out.push(k.slice(BAK.length)); }
+    } catch (e) {}
+    return out.sort().reverse();
+  }
+  function backupDaily() {
+    var d = new Date(), k = d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+    if (!Object.keys(store.r).length) return;
+    try {
+      localStorage.setItem(BAK + k, JSON.stringify(store));
+      backups().slice(7).forEach(function (old) { localStorage.removeItem(BAK + old); });
+    } catch (e) {}
+  }
+  // 풀던 세션도 저장해 두었다가 이어 푼다 (새로고침·창 닫기에도 안 날아가게)
+  var SESS = "mox:sess";
+  function saveSession() {
+    if (!session) return;
+    try {
+      if (session.done) { localStorage.removeItem(SESS); return; }
+      var s = {};
+      Object.keys(session).forEach(function (k) { if (k !== "items") s[k] = session[k]; });
+      s.items = session.items.map(function (x) { return [x.set.id, x.q.id]; });
+      s.t = Date.now();
+      localStorage.setItem(SESS, JSON.stringify(s));
+    } catch (e) {}
+  }
+  function findSet(sid) {
+    if (SETS[sid]) return SETS[sid];
+    if (sid.indexOf("g:") === 0) return G.get(sid.slice(2)) || null;
+    return null;
+  }
+  function savedSession() {
+    try {
+      var s = JSON.parse(localStorage.getItem(SESS) || "null");
+      if (!s || s.done) return null;
+      var items = [];
+      s.items.forEach(function (p) {
+        var set = findSet(p[0]); if (!set) return;
+        var q = set.questions.filter(function (x) { return x.id === p[1]; })[0];
+        if (q) items.push({ set: set, q: q });
+      });
+      if (items.length !== s.items.length) return null;   // 기출이 아직 안 열렸으면 나중에
+      s.items = items;
+      return s;
+    } catch (e) { return null; }
   }
   function merge(into, other) {
     other = norm(other);
@@ -68,26 +120,37 @@
 
   function rec(setId, qid) { return store.r[setId + ":" + qid]; }
   function isDue(setId, qid) { var r = rec(setId, qid); return !!r && (r.d == null ? r.l === 0 : r.d <= today()); }
+  function srs(r) {
+    if (r.iv == null) r.iv = r.b != null ? INTERVAL[r.b] || 0 : (r.l ? 1 : 0);
+    if (r.ef == null) r.ef = 2.5;
+    return r;
+  }
   function level(r) {
     if (!r) return 0;
-    var b = r.b == null ? (r.l ? 1 : 0) : r.b;
-    return b === 0 ? 1 : b <= 2 ? 2 : b <= 4 ? 3 : 4;
+    srs(r);
+    if (r.l === 0 || r.iv === 0) return 1;
+    return r.iv < 3 ? 2 : r.iv < 10 ? 3 : 4;
   }
-  // res: true 맞음 / false 틀림 / "?" 모르겠다
+  // res: "know" 안다 / "unsure" 모르겠다 / "wrong" 틀렸다 (true·"?"·false도 받음)
   function record(set, qid, res) {
+    if (res === true) res = "know"; else if (res === "?") res = "unsure"; else if (res !== "know" && res !== "unsure") res = "wrong";
     var k = set.id + ":" + qid;
-    var r = store.r[k] || { c: 0, w: 0, u: 0 };
-    var ok = res === true;
-    if (ok) r.c++; else if (res === "?") r.u = (r.u || 0) + 1; else r.w++;
-    var b = r.b == null ? 0 : r.b;
-    r.b = ok ? Math.min(b + 1, INTERVAL.length - 1) : 0;
-    var due = today() + INTERVAL[r.b];
+    var r = srs(store.r[k] ? JSON.parse(JSON.stringify(store.r[k])) : { c: 0, w: 0, u: 0 });
+    if (res === "know") {
+      r.c++;
+      r.iv = r.iv < 1 ? 1 : r.iv < 3 ? 3 : Math.round(r.iv * r.ef);
+    } else if (res === "unsure") {
+      r.u = (r.u || 0) + 1; r.ef = Math.max(1.3, r.ef - 0.15);
+      r.iv = Math.max(1, Math.round(r.iv * 1.2));
+    } else {
+      r.w++; r.ef = Math.max(1.3, r.ef - 0.2); r.iv = 0; r.lapse = (r.lapse || 0) + 1;
+    }
+    var due = today() + r.iv;
     var ex = examDay(set);
     // 시험 전이면 다음 복습이 시험 전날을 넘지 않게
-    if (ok && ex != null && today() < ex - 1) due = Math.min(due, ex - 1);
-    r.d = due;
-    r.l = ok ? 1 : 0;
-    r.t = Date.now();
+    if (r.iv > 0 && ex != null && today() < ex - 1) due = Math.min(due, ex - 1);
+    r.d = due; r.l = res === "know" ? 1 : 0; r.g = res; r.t = Date.now();
+    delete r.b;
     store.r[k] = r;
   }
   function isStar(setId, qid) { var v = store.s[setId + ":" + qid]; return !!(v && v.on); }
@@ -306,6 +369,8 @@
   }
 
   function boot() {
+    // 브라우저가 저장공간 정리할 때 이 사이트 기록은 지우지 말라고 요청
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
     var files = window.SET_FILES || [];
     var i = 0;
     (function next() {
@@ -375,9 +440,12 @@
     }).join("") + "</div>";
   }
   function setNav(which) {
+    if (which === "wrong") which = "review";
     document.querySelectorAll(".navlink").forEach(function (a) {
       a.classList.toggle("on", a.getAttribute("href") === "#/" + which);
     });
+    var b = document.getElementById("rvBadge");
+    if (b) { var n = dueItems(allSets()).length; b.textContent = n; b.classList.toggle("hidden", !n); }
   }
   function oxSets() { return ORDER.map(function (id) { return SETS[id]; }); }
   function allSets() { var ex = G.ex(); return oxSets().concat(G.sets(), ex ? [ex] : []); }
@@ -417,6 +485,7 @@
     window.scrollTo(0, 0);
     setNav(parts[0]);
     if (parts[0] === "set" && SETS[decodeURIComponent(parts[1])]) return viewSet(SETS[decodeURIComponent(parts[1])]);
+    if (parts[0] === "quiz" && !session) session = savedSession();   // 새로고침해도 풀던 곳부터
     if (parts[0] === "quiz" && session) return viewQuiz();
     if (parts[0] === "result" && session) return viewResult();
     if (parts[0] === "g" && parts[1] && G.get(decodeURIComponent(parts[1]))) {
@@ -425,7 +494,7 @@
     if (parts[0] === "g") return viewGList();
     if (parts[0] === "ex") return viewEx();
     if (parts[0] === "search") return viewSearch(decodeURIComponent(parts[1] || ""));
-    if (parts[0] === "wrong") return viewWrong();
+    if (parts[0] === "review" || parts[0] === "wrong") return viewWrong();
     if (parts[0] === "settings") return viewSettings();
     viewHome();
   }
@@ -434,8 +503,8 @@
   function reviewCard(sets, back, title) {
     var due = dueItems(sets);
     if (due.length) {
-      return '<div class="card review"><div><div class="rv-n">' + due.length + '<small>문제</small></div><p>오늘 복습할 차례예요. 틀렸던 것부터 나와요.</p></div>' +
-        '<button class="btn primary" data-review="' + esc(back) + '">오늘 복습 시작</button></div>';
+      return '<div class="card review"><div><div class="rv-n">' + due.length + '<small>문제</small></div><p>오늘 복습할 차례예요. 복습 칸에서 골라 풀 수 있어요.</p></div>' +
+        '<a class="btn primary" style="text-decoration:none;text-align:center" href="#/review">복습 칸으로</a></div>';
     }
     var up = upcoming(sets);
     var any = sets.some(function (s) { return stats(s).seen; });
@@ -468,6 +537,11 @@
     document.title = "의대 OX 퀴즈";
     var all = oxSets();
     var html = '<h1>오늘 할 공부</h1><p class="sub">기출(출족·작년 시험)과 자작 OX를 한곳에서. 맞히면 복습 간격이 늘고, 틀리거나 모르면 다시 돌아옵니다.</p>';
+    var sv = savedSession();
+    if (sv) {
+      html += '<div class="card continue" style="margin-top:18px"><p>풀던 것 이어 풀기 · <b>' + esc(sv.title) + "</b> " + (sv.i + 1) + "/" + sv.items.length + "</p>" +
+        '<button class="btn primary" id="resumeBtn">이어 풀기</button></div>';
+    }
     html += '<div style="margin-top:18px">' + reviewCard(allSets(), "#/", "오늘 복습") + "</div>";
 
     var gd = G.data();
@@ -510,6 +584,7 @@
     });
     app().innerHTML = html;
     bindReview(allSets(), "#/", "오늘 복습");
+    var rb = document.getElementById("resumeBtn"); if (rb) rb.onclick = resume;
   }
 
   // ── 세트 화면 ─────────────────────────────────────
@@ -614,9 +689,19 @@
 
   // ── 풀이 ──────────────────────────────────────────
   // review: 복습 세션이면 틀리거나 모른 문제를 세션 끝에 한 번 더 낸다
+  // 안다·모르겠다·틀렸다 중 틀렸다·모르겠다는 세션 끝에 한 번 더 (안키의 '다시 학습')
   function start(items, grade, back, title, review) {
     if (!items.length) return;
-    session = { items: items, i: 0, ans: new Array(items.length), grade: grade, back: back, title: title, review: !!review, again: {}, done: false };
+    session = { items: items, i: 0, ans: new Array(items.length), grade: grade, back: back, title: title, review: !!review,
+      again: {}, againDone: {}, rate: {}, snap: {}, cur: 1, done: false };
+    saveSession();
+    location.hash = "#/quiz";
+    if (location.hash === "#/quiz") route();
+  }
+  function resume() {
+    var s = savedSession();
+    if (!s) return;
+    session = s;
     location.hash = "#/quiz";
     if (location.hash === "#/quiz") route();
   }
@@ -766,13 +851,9 @@
 
     if (revealed) {
       var ok = picked === q.a;
-      var head = ok ? "정답" : picked === "?" ? "모름" : "오답";
-      var nr = rec(set.id, q.id);
-      var nextTxt = nr && nr.d != null ? (nr.d <= today() ? (S.review ? "이번 복습 끝에 한 번 더 나와요" : "오늘 복습에 다시 나와요") : "다음 복습 " + dLabel(nr.d - today())) : "";
-      html += '<div class="verdict ' + (ok ? "ok" : "ng") + '"><div class="head">' + head + ' · 답은 ' + (q.a ? "O" : "X") +
-        (nextTxt ? '<span class="nextrv">' + nextTxt + "</span>" : "") + '</div>' +
-        (q.why ? "<p>" + esc(q.why) + "</p>" : "") + "</div>";
-      html += '<div class="qnav"><button class="btn primary" id="nextBtn">' + (S.i + 1 < S.items.length ? "다음 →" : "결과 보기") + "</button></div>";
+      html += '<div class="verdict ' + (ok ? "ok" : "ng") + '"><div class="head">' + verdictHead(S, ok, picked) + ' · 답은 ' + (q.a ? "O" : "X") +
+        nextRvTxt(S, set, q, ok) + '</div>' + (q.why ? "<p>" + esc(q.why) + "</p>" : "") + "</div>";
+      html += rateButtons(S, ok);
     }
     }
     if (!revealed && r && S.grade === "instant") {
@@ -786,38 +867,47 @@
         return '<button data-k="' + k + '" class="' + (S.ans[k] !== undefined ? "done " : "") + (k === S.i ? "cur" : "") + '">' + (k + 1) + "</button>";
       }).join("") + "</div>";
     }
+    var after = ' &nbsp;·&nbsp; 답 본 뒤 <kbd>→</kbd> 안다 <kbd>←</kbd> 모르겠다(찍었음)';
     html += isG
-      ? '<p class="kbd"><kbd>1</kbd>~<kbd>9</kbd> 보기 고르기 &nbsp; <kbd>↓</kbd> 모르겠다 &nbsp; <kbd>Enter</kbd> 채점·답 보기 &nbsp; <kbd>→</kbd> 다음' + (S.grade === "exam" ? " · <kbd>←</kbd> 이전" : "") + ' &nbsp; <kbd>S</kbd> 별표</p>'
-      : '<p class="kbd"><kbd>O</kbd>·<kbd>1</kbd> 맞다 &nbsp; <kbd>X</kbd>·<kbd>2</kbd> 틀리다 &nbsp; <kbd>↓</kbd>·<kbd>3</kbd> 모르겠다 &nbsp; <kbd>→</kbd> 다음' + (S.grade === "exam" ? " · <kbd>←</kbd> 이전" : "") + ' &nbsp; <kbd>S</kbd> 별표</p>';
+      ? '<p class="kbd">' + (q.type === "short" ? "<kbd>→</kbd> 답 보기 → <kbd>→</kbd> 안다 <kbd>←</kbd> 틀렸다 <kbd>↓</kbd> 모르겠다"
+        : "<kbd>↑</kbd><kbd>↓</kbd> 보기 이동 &nbsp; <kbd>→</kbd> 고르기" + (q.type === "multi" ? "·빼기 <kbd>Enter</kbd> 채점" : "") + " &nbsp; <kbd>←</kbd> 모르겠다") + after + ' &nbsp; <kbd>S</kbd> 별표</p>'
+      : '<p class="kbd"><kbd>→</kbd> 맞다(O) &nbsp; <kbd>←</kbd> 틀리다(X) &nbsp; <kbd>↓</kbd> 모르겠다' + after + ' &nbsp; <kbd>S</kbd> 별표</p>';
     app().innerHTML = html;
     if (isG) G.hydrate(app());
 
+    S.rate = S.rate || {}; S.snap = S.snap || {}; S.againDone = S.againDone || {}; S.cur = S.cur || 1;
+    var key = set.id + ":" + q.id;
+    // 틀렸다·모르겠다는 세션에 다시 끼워 넣지 않고 '복습' 칸으로 모은다 (사용자가 골라서 복습)
+    function requeue() {}
     function answer(v) {
       if (revealed) return;
       S.ans[S.i] = v; S.sel = null; S.peek = false;
       if (S.grade === "instant") {
         var g = grade(it, v);
-        if (g !== null) { record(set, q.id, g === true ? true : g === "?" ? "?" : false); save(); }
-        var ok = g === true || g === null;
-        var key = set.id + ":" + q.id;
-        if (S.review && !ok && !S.againDone) S.againDone = {};
-        if (S.review && !ok && !S.againDone[key]) {
-          S.againDone[key] = 1;
-          S.items.push(it); S.ans.push(undefined); S.again[S.items.length - 1] = 1;
+        S.snap[S.i] = store.r[key] ? JSON.stringify(store.r[key]) : null;
+        if (g !== null) {
+          var res = g === true ? "know" : g === "?" ? "unsure" : "wrong";
+          record(set, q.id, res); S.rate[S.i] = res; save();
+          if (res !== "know") requeue();
         }
-        viewQuiz();
-      } else {
-        if (S.i + 1 < S.items.length) S.i++;
-        viewQuiz();
-      }
+      } else if (S.i + 1 < S.items.length) S.i++;
+      saveSession();
+      viewQuiz();
+    }
+    // 맞혔지만 확실하지 않았다 → 안다 대신 모르겠다로 다시 기록
+    function unsure() {
+      if (!revealed || S.rate[S.i] !== "know") return next();
+      if (S.snap[S.i]) store.r[key] = JSON.parse(S.snap[S.i]); else delete store.r[key];
+      record(set, q.id, "unsure"); S.rate[S.i] = "unsure"; save(); requeue();
+      next();
     }
     function next() {
       if (S.grade === "instant" && !revealed) return;
-      S.sel = null; S.peek = false;
-      if (S.i + 1 < S.items.length) { S.i++; viewQuiz(); window.scrollTo(0, 0); }
+      S.sel = null; S.peek = false; S.cur = 1;
+      if (S.i + 1 < S.items.length) { S.i++; saveSession(); viewQuiz(); window.scrollTo(0, 0); }
       else finish();
     }
-    function move(d) { S.sel = null; S.peek = false; S.i += d; viewQuiz(); window.scrollTo(0, 0); }
+    function move(d) { S.sel = null; S.peek = false; S.cur = 1; S.i += d; saveSession(); viewQuiz(); window.scrollTo(0, 0); }
     function choose(c) {
       if (revealed || !isG || q.type === "short") return;
       var n = nChoices(q);
@@ -844,6 +934,7 @@
     var pk = document.getElementById("peekBtn"); if (pk) pk.onclick = enter;
     document.querySelectorAll("[data-self]").forEach(function (b) { b.onclick = function () { answer(b.dataset.self === "1"); }; });
     var nb = document.getElementById("nextBtn"); if (nb) { nb.onclick = next; nb.focus({ preventScroll: true }); }
+    var ub = document.getElementById("unsureBtn"); if (ub) ub.onclick = unsure;
     document.getElementById("starBtn").onclick = function () { toggleStar(set.id, q.id); this.setAttribute("aria-pressed", isStar(set.id, q.id)); };
     var pb = document.getElementById("prevBtn"); if (pb) pb.onclick = function () { move(-1); };
     var sk = document.getElementById("skipBtn"); if (sk) sk.onclick = function () { move(1); };
@@ -865,18 +956,38 @@
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (/INPUT|TEXTAREA/.test((e.target || {}).tagName || "")) return;
       var c = e.code, dm = /^(?:Digit|Numpad)(\d)$/.exec(c);
-      if (isG && dm) { e.preventDefault(); choose(+dm[1]); return; }
-      if (!isG && (c === "KeyO" || c === "Digit1" || c === "Numpad1")) { e.preventDefault(); answer(true); }
-      else if (!isG && (c === "KeyX" || c === "Digit2" || c === "Numpad2")) { e.preventDefault(); answer(false); }
-      else if (c === "ArrowDown" || c === "Slash" || (!isG && (c === "Digit3" || c === "Numpad3"))) { e.preventDefault(); answer("?"); }
-      else if (c === "Enter" || c === "Space") { e.preventDefault(); enter(); }
-      else if (c === "ArrowRight") {
-        if (revealed) { e.preventDefault(); next(); }
-        else if (S.grade === "exam" && S.i + 1 < S.items.length) { e.preventDefault(); move(1); }
+      var R = c === "ArrowRight", L = c === "ArrowLeft", U = c === "ArrowUp", D = c === "ArrowDown";
+      if (c === "KeyS") { document.getElementById("starBtn").click(); return; }
+      if (c === "Escape") { location.hash = S.back; return; }
+      if (R || L || U || D || c === "Enter" || c === "Space") e.preventDefault();
+      // 답을 본 뒤: → 안다(다음), ← 모르겠다(찍었음)
+      if (revealed) {
+        if (R || c === "Enter" || c === "Space") next();
+        else if (L || D) unsure();
+        return;
       }
-      else if (c === "ArrowLeft" && S.grade === "exam" && S.i) { e.preventDefault(); move(-1); }
-      else if (c === "KeyS") { document.getElementById("starBtn").click(); }
-      else if (c === "Escape") { location.hash = S.back; }
+      if (S.grade === "exam" && c === "PageUp" && S.i) return move(-1);
+      if (S.grade === "exam" && c === "PageDown" && S.i + 1 < S.items.length) return move(1);
+      if (!isG) {   // OX: → 맞다, ← 틀리다, ↓ 모르겠다
+        if (R || c === "KeyO" || c === "Digit1" || c === "Numpad1") answer(true);
+        else if (L || c === "KeyX" || c === "Digit2" || c === "Numpad2") answer(false);
+        else if (D || c === "Slash" || c === "Digit3" || c === "Numpad3") answer("?");
+        else if (U && S.grade === "exam" && S.i) move(-1);
+        return;
+      }
+      if (dm) return choose(+dm[1]);
+      if (q.type === "short") {   // 주관식: → 답 보기, 그다음 → 안다 · ← 틀렸다 · ↓ 모르겠다
+        if (!S.peek) { if (R || c === "Enter" || c === "Space") enter(); else if (L || D) answer("?"); }
+        else if (R) answer(true); else if (L) answer(false); else if (D) answer("?");
+        return;
+      }
+      // 객관식: ↑↓ 보기 이동, → 고르기, ← 모르겠다, (모두 고르기는 → 로 넣고 빼기 · Enter 채점)
+      var n = nChoices(q);
+      if (D) { S.cur = Math.min(n, S.cur + 1); viewQuiz(); }
+      else if (U) { S.cur = Math.max(1, S.cur - 1); viewQuiz(); }
+      else if (R || c === "Space") choose(S.cur);
+      else if (c === "Enter") { if (q.type === "multi") enter(); else choose(S.cur); }
+      else if (L) answer("?");
     };
   }
 
@@ -903,7 +1014,10 @@
         if (revealed) {
           if ((q.answer || []).indexOf(c) >= 0) cl += " right";
           else if (mine.indexOf(c) >= 0) cl += " wrong";
-        } else if (sel.indexOf(c) >= 0) cl += " pick";
+        } else {
+          if (sel.indexOf(c) >= 0) cl += " pick";
+          if (c === (S.cur || 1)) cl += " cur";
+        }
         html += '<button class="' + cl + '" data-c="' + c + '"' + (revealed ? " disabled" : "") + ">" +
           (wide ? '<b class="cn">' + CIRC[c - 1] + "</b><span>" + esc(q.ch[c - 1] || "") + "</span>" : CIRC[c - 1]) + "</button>";
       }
@@ -915,19 +1029,40 @@
     }
     if (revealed) {
       var g = grade(it, picked);
-      var nr = rec(set.id, q.id);
-      var nextTxt = g === null ? "정답이 확실하지 않아 기록하지 않았어요" : nr && nr.d != null ? (nr.d <= today() ? (S.review ? "이번 복습 끝에 한 번 더 나와요" : "오늘 복습에 다시 나와요") : "다음 복습 " + dLabel(nr.d - today())) : "";
-      var head = g === true ? "정답" : g === "?" ? "모름" : g === null ? "채점 보류" : "오답";
-      html += '<div class="verdict ' + (g === true ? "ok" : g === null ? "" : "ng") + '"><div class="head">' + head + " · 답 " + esc(gAnswerStr(q)) +
-        (nextTxt ? '<span class="nextrv">' + nextTxt + "</span>" : "") + "</div></div>";
+      html += '<div class="verdict ' + (g === true ? "ok" : g === null ? "" : "ng") + '"><div class="head">' +
+        (g === null ? "채점 보류" : verdictHead(S, g === true, picked)) + " · 답 " + esc(gAnswerStr(q)) +
+        (g === null ? '<span class="nextrv">정답이 확실하지 않아 기록하지 않았어요</span>' : nextRvTxt(S, set, q, g === true)) + "</div></div>";
+      html += rateButtons(S, g === true);
       html += '<div class="card gexp">' + gExplain(q) + "</div>";
-      html += '<div class="qnav"><button class="btn primary" id="nextBtn">' + (S.i + 1 < S.items.length ? "다음 →" : "결과 보기") + "</button></div>";
     }
     return html;
   }
 
+  // 결과 머리말·다음 복습 안내·안다/모르겠다 버튼
+  function verdictHead(S, ok, picked) {
+    var rt = S.rate && S.rate[S.i];
+    if (picked === "?") return "모르겠다";
+    if (!ok) return "틀렸다";
+    return rt === "unsure" ? "정답 · 모르겠다로 기록" : "정답";
+  }
+  function nextRvTxt(S, set, q, ok) {
+    var nr = rec(set.id, q.id);
+    if (!nr || nr.d == null) return "";
+    var t = nr.d <= today() ? "복습 칸에 들어갔어요" : "다음 복습 " + dLabel(nr.d - today());
+    return '<span class="nextrv">' + t + "</span>";
+  }
+  function rateButtons(S, ok) {
+    var last = S.i + 1 >= S.items.length;
+    if (ok && S.rate && S.rate[S.i] === "know") {
+      return '<div class="qnav rate"><button class="btn ghost" id="unsureBtn">← 모르겠다 <span class="sub2">(찍었음)</span></button>' +
+        '<button class="btn primary" id="nextBtn">안다 →</button></div>';
+    }
+    return '<div class="qnav"><button class="btn primary" id="nextBtn">' + (last ? "결과 보기 →" : "다음 →") + "</button></div>";
+  }
+
   function finish() {
     session.done = true;
+    saveSession();
     Sync.now();
     location.hash = "#/result";
   }
@@ -936,13 +1071,14 @@
   function viewResult() {
     var S = session;
     document.title = "결과 — 의대 OX";
-    var tot = 0, ok = 0, unk = 0, byT = {}, wrong = [], seen = {};
+    var tot = 0, ok = 0, unk = 0, byT = {}, wrong = [], seen = {}, cnt = { know: 0, unsure: 0, wrong: 0 };
     S.items.forEach(function (x, k) {
       var a = S.ans[k];
       if (a === undefined || S.again[k]) return; // 점수는 첫 시도만
       var g = grade(x, a);
       if (g === null) return;
       tot++;
+      cnt[(S.rate && S.rate[k]) || (g === true ? "know" : g === "?" ? "unsure" : "wrong")]++;
       var key = x.set.id + "|" + (x.set.kind === "g" ? "" : x.q.t);
       byT[key] = byT[key] || { name: x.set.kind === "g" ? x.set.title : x.set.topicMap[x.q.t].name, ok: 0, n: 0 };
       byT[key].n++;
@@ -956,9 +1092,9 @@
     var up = upcoming(allSets());
     var html = '<a class="crumb" href="' + S.back + '">← ' + esc(S.title) + '</a><h1>결과</h1>' +
       '<div class="card score" style="margin-top:12px"><div class="ring" style="--p:' + p + '"><span>' + p + '%</span></div>' +
-      '<div><div style="font-size:18px;font-weight:700">' + ok + " / " + tot + ' 맞음</div><p class="sub">' +
-      (unk ? "모름 " + unk + "문제 · " : "") +
-      (wrong.length ? "틀리거나 모른 " + wrong.length + "문제는 복습 단계가 처음으로 돌아갔어요." : "전부 맞혔어요!") +
+      '<div><div style="font-size:18px;font-weight:700">' + ok + " / " + tot + ' 맞음</div>' +
+      '<div class="rcount"><span class="k">안다 <b>' + cnt.know + '</b></span><span class="u">모르겠다 <b>' + cnt.unsure + '</b></span><span class="w">틀렸다 <b>' + cnt.wrong + "</b></span></div>" +
+      '<p class="sub">' + (cnt.unsure + cnt.wrong ? "모르겠다·틀렸다는 간격이 줄어 곧 다시 나와요." : "전부 안다! 간격이 늘어났어요.") +
       (up ? "<br>다음 복습: " + dLabel(up.days) + " " + up.n + "문제" : "") + "</p></div></div>";
 
     var keys = Object.keys(byT);
@@ -1223,31 +1359,87 @@
     inp.focus();
   }
 
-  // ── 오답노트 ──────────────────────────────────────
-  function viewWrong() {
-    document.title = "오답노트 — 의대 OX";
-    var wrong = [], stars = [];
+  // ── 복습 칸 ───────────────────────────────────────
+  // 풀다가 틀렸다·모르겠다로 남긴 것과 복습 날이 된 것을 모아 두고, 사용자가 골라서 복습한다
+  var rvOpts = { scope: "all", order: "shuffle" };
+  function lastGrade(r) { return r.g || (r.l === 0 ? (r.u && !r.w ? "unsure" : "wrong") : "know"); }
+  function reviewPools() {
+    var P = { due: [], wrong: [], unsure: [], star: [] };
     allSets().forEach(function (set) {
+      if (rvOpts.scope === "g" && set.kind !== "g") return;
+      if (rvOpts.scope === "ox" && set.kind === "g") return;
       set.questions.forEach(function (q) {
-        var r = rec(set.id, q.id);
-        if (r && r.l === 0) wrong.push({ set: set, q: q, r: r });
-        if (isStar(set.id, q.id)) stars.push({ set: set, q: q });
+        var r = rec(set.id, q.id), x = { set: set, q: q, r: r };
+        if (r) {
+          if (isDue(set.id, q.id)) P.due.push(x);
+          var g = lastGrade(r);
+          if (g === "wrong") P.wrong.push(x); else if (g === "unsure") P.unsure.push(x);
+        }
+        if (isStar(set.id, q.id)) P.star.push(x);
       });
     });
-    wrong.sort(function (a, b) { return (b.r.w + (b.r.u || 0)) - (a.r.w + (a.r.u || 0)) || b.r.t - a.r.t; });
-    var html = '<h1>오답노트</h1><p class="sub">마지막으로 풀었을 때 틀렸거나 ‘모르겠다’ 한 문제예요. 다시 맞히면 빠져요.<br>★ 별표는 헷갈려서 다시 보고 싶은 문제에 직접 찍는 표시로, 맞혀도 안 빠지고 내가 끌 때까지 남아요.</p>';
-    html += '<div class="btnrow" style="margin-top:14px">' +
-      '<button class="btn primary" id="doWrong"' + (wrong.length ? "" : " disabled") + ">오답 " + wrong.length + "문제 섞어서 풀기</button>" +
-      '<button class="btn" id="doStar"' + (stars.length ? "" : " disabled") + ">★ 별표 " + stars.length + "문제 풀기</button></div>";
-    if (!wrong.length) html += '<p class="empty">지금 틀린 상태인 문제가 없어요.</p>';
-    else html += '<h2>틀린 문제 <span class="meta">많이 틀린 순</span></h2><div class="wlist">' + wrong.map(function (w) {
-      return witem(w.set, w.q).replace('<p class="q">', '<p class="meta" style="margin:6px 0 0">' + esc(w.set.professor) + " · 틀림 " + w.r.w + "회" + (w.r.u ? " · 모름 " + w.r.u + "회" : "") + " · 맞음 " + w.r.c + '회</p><p class="q">');
-    }).join("") + "</div>";
+    return P;
+  }
+  function reviewCount() { var P = reviewPools(); return P.due.length; }
+  function startReview(list, title) {
+    var items = list.map(function (x) { return { set: x.set, q: x.q }; });
+    if (rvOpts.order === "shuffle") shuffle(items);
+    start(items, "instant", "#/review", title);
+  }
+
+  function viewWrong() {
+    document.title = "복습 — 의대 OX";
+    var P = reviewPools();
+    var html = '<h1>복습</h1><p class="sub">풀면서 <b>틀렸다</b>·<b>모르겠다</b>로 남긴 문제와, 간격이 돌아와 <b>오늘 복습할 차례</b>가 된 문제가 여기 모여요. 원하는 묶음을 골라 푸세요. 다시 풀어 ‘안다’가 되면 빠져요.</p>' +
+      '<div class="card opts" style="margin-top:14px">' +
+      seg("scope", "범위", [["all", "전부"], ["g", "기출만"], ["ox", "자작 OX만"]], rvOpts.scope) +
+      seg("order", "순서", [["shuffle", "섞기"], ["seq", "강의 순서"]], rvOpts.order) + "</div>" +
+      '<div class="rvgrid">' +
+      rvBox("due", "오늘 복습 차례", "간격이 돌아온 문제", P.due.length) +
+      rvBox("wrong", "틀렸다", "마지막에 틀린 문제", P.wrong.length) +
+      rvBox("unsure", "모르겠다", "찍었거나 몰랐던 문제", P.unsure.length) +
+      rvBox("star", "★ 별표", "직접 찍어 둔 문제", P.star.length) + "</div>";
+    var up = upcoming(allSets());
+    if (!P.due.length && up) html += '<p class="note" style="margin-top:8px">다음 복습: ' + dLabel(up.days) + " " + up.n + "문제</p>";
+
+    // 강의·세트별로 틀렸다+모르겠다
+    var by = {}, order = [];
+    P.wrong.concat(P.unsure).forEach(function (x) {
+      if (!by[x.set.id]) { by[x.set.id] = []; order.push(x.set.id); }
+      by[x.set.id].push(x);
+    });
+    if (order.length) {
+      html += '<h2>강의별 <span class="meta">틀렸다 + 모르겠다</span></h2><div class="stack">' + order.map(function (id) {
+        var l = by[id], s = l[0].set;
+        return '<div class="card exrow"><div class="lmain"><div class="ltitle">' + esc(s.title) + ' <span class="meta">' + esc(s.professor || "") + "</span></div>" +
+          '<div class="meta">틀렸다 ' + l.filter(function (x) { return lastGrade(x.r) === "wrong"; }).length + " · 모르겠다 " + l.filter(function (x) { return lastGrade(x.r) === "unsure"; }).length + "</div></div>" +
+          '<button class="btn" data-set="' + esc(id) + '">' + l.length + "문제 풀기</button></div>";
+      }).join("") + "</div>";
+      var list = P.wrong.concat(P.unsure).sort(function (a, b) { return (b.r.w + (b.r.u || 0)) - (a.r.w + (a.r.u || 0)) || b.r.t - a.r.t; });
+      html += '<h2>문제 목록 <span class="meta">많이 틀린 순</span></h2><div class="wlist">' + list.map(function (w) {
+        var gl = lastGrade(w.r) === "wrong" ? '<span class="pill memo">틀렸다</span>' : '<span class="pill ex">모르겠다</span>';
+        return witem(w.set, w.q).replace('<p class="q">', '<p class="meta" style="margin:6px 0 0">' + gl + " " + esc(w.set.professor || "") + " · 틀림 " + w.r.w + "회" + (w.r.u ? " · 모름 " + w.r.u + "회" : "") + " · 맞음 " + w.r.c + '회</p><p class="q">');
+      }).join("") + "</div>";
+    } else html += '<p class="empty">틀렸다·모르겠다로 남은 문제가 없어요.</p>';
     app().innerHTML = html;
     G.hydrate(app());
-    var mk = function (arr) { return shuffle(arr.map(function (w) { return { set: w.set, q: w.q }; })); };
-    document.getElementById("doWrong").onclick = function () { start(mk(wrong), "instant", "#/wrong", "오답노트", true); };
-    document.getElementById("doStar").onclick = function () { start(mk(stars), "instant", "#/wrong", "오답노트"); };
+    document.querySelectorAll(".opts .seg").forEach(function (g) {
+      g.onclick = function (e) {
+        var b = e.target.closest("button"); if (!b) return;
+        rvOpts[g.dataset.k] = b.dataset.v; viewWrong();
+      };
+    });
+    var names = { due: "오늘 복습", wrong: "틀렸다 복습", unsure: "모르겠다 복습", star: "별표 복습" };
+    document.querySelectorAll("[data-pool]").forEach(function (b) {
+      b.onclick = function () { startReview(P[b.dataset.pool], names[b.dataset.pool]); };
+    });
+    document.querySelectorAll("[data-set]").forEach(function (b) {
+      b.onclick = function () { startReview(by[b.dataset.set], by[b.dataset.set][0].set.title + " 복습"); };
+    });
+  }
+  function rvBox(k, name, desc, n) {
+    return '<div class="card rvbox rv-' + k + '"><div class="rvn">' + n + '</div><div class="rvname">' + name + '</div><p class="note">' + desc + "</p>" +
+      '<button class="btn' + (k === "due" ? " primary" : "") + '" data-pool="' + k + '"' + (n ? "" : " disabled") + ">풀기</button></div>";
   }
 
   // ── 설정 ──────────────────────────────────────────
@@ -1293,7 +1485,9 @@
       '<h2>초기화</h2><div class="card"><p class="note" style="margin-top:0">동기화가 켜져 있으면 모든 기기에서 같이 지워져요.</p><div class="btnrow">' +
       ORDER.map(function (id) { return '<button class="btn ghost" data-reset="' + esc(id) + '">' + esc(SETS[id].professor + " · " + SETS[id].title) + " 기록 지우기</button>"; }).join("") +
       '<button class="btn danger" data-reset="*">전체 기록·별표 지우기</button></div></div>' +
-      '<h2>복습 규칙</h2><div class="card note">맞히면 다음 복습이 1 → 3 → 7 → 14 → 30 → 60일 뒤로 늘어나고, 틀리거나 ‘모르겠다’ 하면 처음 단계로 돌아가 오늘 다시 나옵니다. 세트에 시험일이 있으면 시험 전날을 넘겨 미루지 않아요. 단계: 다시 익히는 중(0) · 학습 중(1–2) · 익숙(3–4) · 완벽(5+).</div>';
+      '<h2>기록 백업</h2><div class="card"><p class="note" style="margin-top:0">하루 한 번 기록을 이 기기에 따로 저장해 둬요(최근 7일). 기록이 사라졌으면 날짜를 골라 되살리세요 — 지금 기록과 합쳐지고, 더 최근에 푼 건 그대로 남아요.</p><div class="btnrow">' +
+      (backups().length ? backups().map(function (d) { return '<button class="btn ghost" data-bak="' + esc(d) + '">' + esc(d) + " 되살리기</button>"; }).join("") : '<span class="note">아직 백업이 없어요.</span>') + "</div></div>" +
+      '<h2>복습 규칙 (안키 방식)</h2><div class="card note">답을 보면 세 가지로 남아요. <b>안다</b>(맞혔고 확실): 다음 복습이 1 → 3 → 8 → 20일처럼 늘어남. <b>모르겠다</b>(찍었거나 몰랐음): 간격이 거의 안 늘고 복습 칸 ‘모르겠다’에 모임. <b>틀렸다</b>: 오늘 복습 차례가 되고 복습 칸 ‘틀렸다’에 모임. 복습 칸에서 골라 풀면 돼요. 자주 헷갈린 문제일수록 간격이 천천히 늘어요. 시험일 전날을 넘겨 미루지 않아요. 단계: 다시 익히는 중 · 학습 중(간격 3일 미만) · 익숙(10일 미만) · 완벽.</div>';
     app().innerHTML = html;
 
     var on = document.getElementById("syncOn");
@@ -1318,6 +1512,18 @@
         document.getElementById("gMsg").textContent = "못 열었어요: " + e.message;
       });
     };
+    document.querySelectorAll("[data-bak]").forEach(function (b) {
+      b.onclick = function () {
+        try {
+          var d = JSON.parse(localStorage.getItem(BAK + b.dataset.bak) || "null");
+          if (!d) return;
+          var before = Object.keys(store.r).length;
+          merge(store, d); save();
+          alert("되살렸어요. 기록 " + before + " → " + Object.keys(store.r).length + "문항");
+          viewSettings();
+        } catch (e) { alert("백업을 못 읽었어요."); }
+      };
+    });
     var gf = document.getElementById("gForget");
     if (gf) gf.onclick = function () { if (confirm("이 기기에서 기출 키를 지울까요? (기록은 남아요)")) { G.forget(); viewSettings(); } };
     var sn = document.getElementById("syncNow"); if (sn) sn.onclick = function () { Sync.now(); };

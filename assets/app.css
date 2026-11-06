@@ -232,6 +232,18 @@ details.sum li { margin: 4px 0; }
 .choices.wide .choice .cn { font-size: 18px; font-weight: 800; flex: none; }
 .choice { border: 2px solid var(--line); background: var(--card); border-radius: 14px; height: 58px; font-size: 24px; font-weight: 700; }
 .choice:hover:not(:disabled) { border-color: var(--teal); }
+.choice.cur { outline: 3px solid color-mix(in srgb, var(--teal) 45%, transparent); outline-offset: 1px; }
+.qnav.rate .btn.ghost { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
+.sub2 { font-weight: 500; font-size: 12px; opacity: .8; }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 99px; background: var(--brick); color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-weight: 700; }
+.rvgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
+.rvbox { display: flex; flex-direction: column; gap: 4px; }
+.rvbox .rvn { font-size: 30px; font-weight: 800; line-height: 1.1; }
+.rvbox .rvname { font-weight: 700; }
+.rvbox .note { margin: 0 0 6px; flex: 1; }
+.rv-due .rvn { color: var(--teal); } .rv-wrong .rvn { color: var(--brick); } .rv-unsure .rvn { color: var(--amber); } .rv-star .rvn { color: var(--amber); }
+.rcount { display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; margin: 4px 0 2px; }
+.rcount .k b { color: var(--teal); } .rcount .u b { color: var(--amber); } .rcount .w b { color: var(--brick); }
 .choice.pick { border-color: var(--teal); background: var(--teal-soft); color: var(--teal); }
 .choice.right { border-color: var(--o); background: var(--teal-soft); color: var(--o); }
 .choice.wrong { border-color: var(--x); background: var(--brick-soft); color: var(--x); }

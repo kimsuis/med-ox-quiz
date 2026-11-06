@@ -19,8 +19,9 @@
 2. `python -I _build/extract.py [강의id…]` — 출족 표를 문항 단위로 잘라 `raw/`, `img/`
 3. `python -I _build/parse_exam.py` — 작년 시험지
 4. 해설: `EXPLAIN_GUIDE.md` 지침대로 `explain/<강의id>.json` (근거 경로 `refs.json`, `make_refs.py`)
-5. `python -I _build/pack.py` — 합쳐서 암호화 → `data/g/`
-6. 커밋·푸시
+5. 문제 글: `TEXT_GUIDE.md` 지침대로 `text/<강의id>.json` (사진·그래프만 그림, 나머지는 글)
+6. `python -I _build/pack.py` — 합쳐서 암호화 → `data/g/`
+7. 커밋·푸시 (직접)
 
 ## 자작 OX 세트 추가
 

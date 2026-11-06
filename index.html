@@ -7,7 +7,7 @@
 <meta name="description" content="교수님 강조 범위만 골라 푸는 OX 퀴즈">
 <meta name="theme-color" content="#2f6f62">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232f6f62'/%3E%3Ccircle cx='22' cy='32' r='10' fill='none' stroke='%23faf8f3' stroke-width='5'/%3E%3Cpath d='M37 22l16 20M53 22L37 42' stroke='%23e8a49c' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="assets/app.css?v=5">
+<link rel="stylesheet" href="assets/app.css?v=7">
 <script>
   try { var th = localStorage.getItem("mox:theme"); if (th) document.documentElement.dataset.theme = th; } catch (e) {}
 </script>
@@ -18,12 +18,12 @@
   <nav>
     <a href="#/settings" id="syncDot" class="syncdot hidden"></a>
     <a href="#/g" class="navlink">기출</a>
-    <a href="#/wrong" class="navlink">오답노트</a>
+    <a href="#/review" class="navlink">복습<span id="rvBadge" class="badge hidden"></span></a>
     <a href="#/settings" class="navlink">설정</a>
   </nav>
 </header>
 <main id="app" aria-live="polite"><p class="loading">불러오는 중…</p></main>
-<script src="assets/app.js?v=5"></script>
+<script src="assets/app.js?v=7"></script>
 <script src="data/sets.js"></script>
 <script>QUIZ.boot();</script>
 </body>
