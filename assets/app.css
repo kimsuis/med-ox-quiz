@@ -235,6 +235,8 @@ details.sum li { margin: 4px 0; }
 .choice.cur { outline: 3px solid color-mix(in srgb, var(--teal) 45%, transparent); outline-offset: 1px; }
 .qnav.rate .btn.ghost { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 50%, var(--line)); }
 .sub2 { font-weight: 500; font-size: 12px; opacity: .8; }
+.yeargrid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.yeargrid .chip { padding: 8px 14px; font-size: 15px; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 99px; background: var(--brick); color: #fff; font-size: 11px; line-height: 18px; text-align: center; font-weight: 700; }
 .rvgrid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 12px; }
 .rvbox { display: flex; flex-direction: column; gap: 4px; }

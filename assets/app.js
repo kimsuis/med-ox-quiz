@@ -493,6 +493,7 @@
     }
     if (parts[0] === "g") return viewGList();
     if (parts[0] === "ex") return viewEx();
+    if (parts[0] === "years") return viewYears();
     if (parts[0] === "search") return viewSearch(decodeURIComponent(parts[1] || ""));
     if (parts[0] === "review" || parts[0] === "wrong") return viewWrong();
     if (parts[0] === "settings") return viewSettings();
@@ -555,7 +556,7 @@
         '<div style="margin-top:10px">' + lvBar(t) + "</div>" +
         '<div class="statline"><span>푼 문제 <b>' + t.seen + "</b>/" + t.q + "</span><span>완벽 <b>" + t.lv[4] + "</b></span>" +
         (t.due ? '<span class="duepill">오늘 복습 ' + t.due + "</span>" : "") + "</div></a>";
-      html += '<div class="btnrow" style="margin-top:10px"><a class="btn ghost" href="#/ex">2025 실제 시험지</a><a class="btn ghost" href="#/search">🔎 기출 검색</a></div>';
+      html += '<div class="btnrow" style="margin-top:10px"><a class="btn ghost" href="#/years">연도별로 풀기</a><a class="btn ghost" href="#/ex">2025 실제 시험지</a><a class="btn ghost" href="#/search">🔎 기출 검색</a></div>';
     }
     html += '<div class="subject-h"><h2>자작 OX</h2><span class="meta">강조점만</span></div>';
 
@@ -1161,7 +1162,7 @@
     var html = '<a class="crumb" href="#/">← 홈</a><h1>' + esc(d.subject) + " 기출</h1>" +
       '<p class="sub">강의마다 올해 출족이 있으면 올해 것, 없으면 작년 출족을 넣었어요. 교수님이 바뀐 강의와 예전 교수 문제는 표시해 뒀어요. <b class="dd">' + dday({ examDate: d.examDate }) + "</b></p>";
     html += '<div style="margin-top:14px">' + reviewCard(sets, "#/g", "기출 복습") + "</div>";
-    html += '<div class="btnrow" style="margin-top:10px"><a class="btn ghost" href="#/ex">2025 실제 시험지</a><a class="btn ghost" href="#/search">🔎 검색</a></div>';
+    html += '<div class="btnrow" style="margin-top:10px"><a class="btn primary" href="#/years">연도별로 풀기</a><a class="btn ghost" href="#/ex">2025 실제 시험지</a><a class="btn ghost" href="#/search">🔎 검색</a></div>';
     var byDate = {}, dates = [];
     sets.forEach(function (s) { var k = s.L.date; if (!byDate[k]) { byDate[k] = []; dates.push(k); } byDate[k].push(s); });
     dates.forEach(function (dt) {
@@ -1182,9 +1183,18 @@
     bindReview(sets, "#/g", "기출 복습");
   }
 
+  // 문항의 연도 (여러 해에 나온 문제는 여러 개, 표시 없으면 "?")
+  function qYears(q) { return q.years && q.years.length ? q.years : ["?"]; }
+  function yearList(sets) {
+    var c = {};
+    sets.forEach(function (s) { s.questions.forEach(function (q) { qYears(q).forEach(function (y) { c[y] = (c[y] || 0) + 1; }); }); });
+    return Object.keys(c).sort(function (a, b) { return a === "?" ? 1 : b === "?" ? -1 : b - a; }).map(function (y) { return [y, c[y]]; });
+  }
+  function hasYear(q, y) { return y === "all" || qYears(q).map(String).indexOf(String(y)) >= 0; }
   function gPick(s, o) {
     return s.questions.filter(function (q) {
       if (o.scope === "now" && isOff(q)) return false;
+      if (o.year && !hasYear(q, o.year)) return false;
       var r = rec(s.id, q.id);
       if (o.filter === "unseen") return !r;
       if (o.filter === "due") return isDue(s.id, q.id);
@@ -1198,7 +1208,7 @@
     if (s.lid === "EX2025") { location.hash = "#/ex"; return; }
     var L = s.L, n = L.note || {}, back = "#/g/" + encodeURIComponent(L.id);
     document.title = L.title + " — 기출";
-    var o = gOpts[s.id] = gOpts[s.id] || { filter: "all", scope: "all", order: "seq", grade: "instant" };
+    var o = gOpts[s.id] = gOpts[s.id] || { filter: "all", scope: "all", order: "seq", grade: "instant", year: "all" };
     var st = stats(s);
     var exq = (G.ex() ? G.ex().questions : []).filter(function (q) { return q.lecture === L.id; });
     var ox = oxSets().filter(function (x) { return (x.gLectures || []).indexOf(L.id) >= 0; });
@@ -1232,6 +1242,7 @@
     }
 
     html += '<h2>골라서 풀기</h2><div class="card opts">' +
+      seg("year", "연도", [["all", "전체"]].concat(yearList([s]).map(function (y) { return [y[0], (y[0] === "?" ? "연도 미상" : y[0]) + " (" + y[1] + ")"]; })), String(o.year)) +
       seg("filter", "문항", [["all", "전체"], ["unseen", "안 푼 것"], ["due", "복습 차례"], ["weak", "약한 것"], ["star", "★ 별표"]], o.filter) +
       (off ? seg("scope", "범위", [["all", "전부"], ["now", "지금 교수·범위만 (" + off + "개 빼기)"]], o.scope) : "") +
       seg("order", "순서", [["seq", "출족 순서"], ["shuffle", "섞기"]], o.order) +
@@ -1260,6 +1271,44 @@
     var eh = document.getElementById("exHere");
     if (eh) eh.onclick = function () { start(exq.map(function (q) { return { set: G.ex(), q: q }; }), "instant", back, L.title); };
     refreshBtn();
+  }
+
+  // 연도별로 풀기: 모든 강의에서 그해 나온 문제를 강의 순서대로 모은다
+  var yOpts = { year: null, scope: "all", grade: "instant", filter: "all" };
+  function viewYears() {
+    document.title = "연도별 기출 — 의대 OX";
+    if (G.state() !== "ready") { app().innerHTML = '<a class="crumb" href="#/g">← 기출 목록</a><h1>연도별로 풀기</h1>' + lockCard(); return; }
+    var sets = G.sets(), years = yearList(sets);
+    // 처음엔 문제가 넉넉한 가장 최근 해부터
+    if (!yOpts.year) yOpts.year = (years.filter(function (y) { return y[0] !== "?" && y[1] >= 20; })[0] || years[0] || ["?"])[0];
+    var o = { year: yOpts.year, scope: yOpts.scope, filter: yOpts.filter };
+    var picks = [];
+    sets.forEach(function (s) { gPick(s, o).forEach(function (q) { picks.push({ set: s, q: q }); }); });
+    var byL = {}, order = [];
+    picks.forEach(function (x) { if (!byL[x.set.id]) { byL[x.set.id] = 0; order.push(x.set); } byL[x.set.id]++; });
+
+    var html = '<a class="crumb" href="#/g">← 기출 목록</a><h1>연도별로 풀기</h1>' +
+      '<p class="sub">고른 해에 나온 출족 문제를 모든 강의에서 모아 강의 순서대로 풀어요. 여러 해에 반복해서 나온 문제는 해마다 들어가요. 작년 실제 시험지는 <a href="#/ex">2025 실제 시험지</a>에서 따로 풀 수 있어요.</p>' +
+      '<div class="yeargrid">' + years.map(function (y) {
+        return '<button class="chip" data-y="' + esc(y[0]) + '" aria-pressed="' + (String(y[0]) === String(yOpts.year)) + '">' + (y[0] === "?" ? "연도 미상" : y[0]) + ' <span class="n">' + y[1] + "</span></button>";
+      }).join("") + "</div>" +
+      '<div class="card opts" style="margin-top:12px">' +
+      seg("filter", "문항", [["all", "전체"], ["unseen", "안 푼 것"], ["weak", "약한 것"]], yOpts.filter) +
+      seg("scope", "범위", [["all", "전부"], ["now", "지금 교수·범위만"]], yOpts.scope) +
+      seg("grade", "채점", [["instant", "바로 확인"], ["exam", "시험처럼 (끝나고 채점)"]], yOpts.grade) + "</div>";
+    html += '<h2>' + (yOpts.year === "?" ? "연도 미상" : esc(yOpts.year) + "년") + ' <span class="meta">' + picks.length + "문항 · 강의 " + order.length + "개</span></h2>";
+    html += order.length ? '<div class="card"><ul class="focus">' + order.map(function (s) {
+      return '<li><span class="where">' + esc(s.L.date) + '</span><span>' + esc(s.title) + ' <span class="meta">' + esc(s.professor) + " · " + byL[s.id] + "문항</span></span></li>";
+    }).join("") + "</ul></div>" : '<p class="empty">조건에 맞는 문제가 없어요.</p>';
+    html += '<div class="startbar"><button class="btn primary block" id="yStart"' + (picks.length ? "" : " disabled") + ">" + picks.length + "문제 풀기</button></div>";
+    app().innerHTML = html;
+    document.querySelectorAll("[data-y]").forEach(function (b) { b.onclick = function () { yOpts.year = b.dataset.y; viewYears(); }; });
+    document.querySelectorAll(".opts .seg").forEach(function (g) {
+      g.onclick = function (e) { var b = e.target.closest("button"); if (!b) return; yOpts[g.dataset.k] = b.dataset.v; viewYears(); };
+    });
+    document.getElementById("yStart").onclick = function () {
+      start(picks, yOpts.grade, "#/years", (yOpts.year === "?" ? "연도 미상" : yOpts.year + "년") + " 기출");
+    };
   }
 
   // 쫙 보기: 문제를 쭉 넘겨 보고 답·해설은 필요할 때만 펼친다
