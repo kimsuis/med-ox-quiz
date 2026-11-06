@@ -194,7 +194,51 @@ details.sum li { margin: 4px 0; }
 .empty { text-align: center; color: var(--mute); padding: 40px 10px; }
 .note { font-size: 13px; color: var(--mute); }
 
+/* 모르겠다 */
+.idk {
+  grid-column: 1 / -1; border: 1.5px dashed var(--line); background: transparent; border-radius: 14px; height: 48px;
+  font-weight: 700; color: var(--mute);
+}
+.idk:hover:not(:disabled) { border-color: var(--amber); color: var(--amber); }
+.idk.pick { border-style: solid; border-color: var(--amber); color: var(--amber); background: var(--amber-soft); }
+.idk:disabled:not(.pick) { opacity: .4; cursor: default; }
+.nextrv { margin-left: auto; font-size: 12px; font-weight: 600; opacity: .8; }
+
+/* 익힘 단계 */
+.lvbar { height: 8px; }
+.lv3 { background: var(--teal); }
+.lv2 { background: color-mix(in srgb, var(--teal) 55%, var(--soft)); }
+.lv1 { background: var(--amber); }
+.lv0 { background: var(--brick); }
+.lv-new { background: var(--soft); border: 1px solid var(--line); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; color: var(--mute); margin-top: 10px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.legend b { color: var(--ink); }
+.dd { color: var(--brick); }
+.duepill { background: var(--brick-soft); color: var(--brick); border-radius: 99px; padding: 0 8px; font-weight: 600; }
+
+/* 오늘 복습 */
+.review { display: flex; align-items: center; justify-content: space-between; gap: 14px; border-color: color-mix(in srgb, var(--brick) 40%, var(--line)); }
+.review p { margin: 2px 0 0; font-size: 14px; color: var(--mute); }
+.review.done { background: var(--teal-soft); border-color: transparent; }
+.review.done p { color: var(--ink); margin: 0; }
+.rv-n { font-size: 28px; font-weight: 800; line-height: 1.1; color: var(--brick); }
+.rv-n small { font-size: 14px; margin-left: 2px; }
+
+/* 동기화 */
+.syncdot { font-size: 12px; padding: 6px 8px; border-radius: 8px; text-decoration: none; color: var(--teal); white-space: nowrap; }
+.syncdot.busy { color: var(--mute); }
+.syncdot.error { color: var(--brick); background: var(--brick-soft); }
+.syncdot.offline { color: var(--amber); }
+.steps { padding-left: 20px; font-size: 14.5px; margin: 8px 0 12px; }
+.steps li { margin: 4px 0; }
+.tokenrow { display: flex; gap: 8px; }
+.tokenrow input { flex: 1; min-width: 0; border: 1px solid var(--line); background: var(--bg); color: var(--ink); border-radius: 10px; padding: 10px 12px; font: inherit; }
+
 @media (max-width: 520px) {
+  .review { flex-direction: column; align-items: stretch; }
+  .top nav .navlink { padding: 6px 7px; }
   h1 { font-size: 21px; }
   .qtext { font-size: 17.5px; }
   .oxbtn { height: 84px; font-size: 40px; }
