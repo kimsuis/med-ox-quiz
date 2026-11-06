@@ -1190,6 +1190,15 @@
     sets.forEach(function (s) { s.questions.forEach(function (q) { qYears(q).forEach(function (y) { c[y] = (c[y] || 0) + 1; }); }); });
     return Object.keys(c).sort(function (a, b) { return a === "?" ? 1 : b === "?" ? -1 : b - a; }).map(function (y) { return [y, c[y]]; });
   }
+  // 연도순 정렬: 문항의 가장 최근 출제 연도 기준, 연도 미상은 맨 뒤 (같은 해 안에서는 원래 순서)
+  function byYear(qs, dir) {
+    var top = function (q) { var y = (q.years || []).filter(function (v) { return v > 0; }); return y.length ? Math.max.apply(null, y) : null; };
+    return qs.map(function (q, i) { return { q: q, i: i, y: top(q) }; }).sort(function (a, b) {
+      if (a.y === b.y) return a.i - b.i;
+      if (a.y === null) return 1; if (b.y === null) return -1;
+      return dir === "old" ? a.y - b.y : b.y - a.y;
+    }).map(function (x) { return x.q; });
+  }
   function hasYear(q, y) { return y === "all" || qYears(q).map(String).indexOf(String(y)) >= 0; }
   function gPick(s, o) {
     return s.questions.filter(function (q) {
@@ -1208,7 +1217,7 @@
     if (s.lid === "EX2025") { location.hash = "#/ex"; return; }
     var L = s.L, n = L.note || {}, back = "#/g/" + encodeURIComponent(L.id);
     document.title = L.title + " — 기출";
-    var o = gOpts[s.id] = gOpts[s.id] || { filter: "all", scope: "all", order: "seq", grade: "instant", year: "all" };
+    var o = gOpts[s.id] = gOpts[s.id] || { filter: "all", scope: "all", order: "new", grade: "instant", year: "all" };
     var st = stats(s);
     var exq = (G.ex() ? G.ex().questions : []).filter(function (q) { return q.lecture === L.id; });
     var ox = oxSets().filter(function (x) { return (x.gLectures || []).indexOf(L.id) >= 0; });
@@ -1245,7 +1254,7 @@
       seg("year", "연도", [["all", "전체"]].concat(yearList([s]).map(function (y) { return [y[0], (y[0] === "?" ? "연도 미상" : y[0]) + " (" + y[1] + ")"]; })), String(o.year)) +
       seg("filter", "문항", [["all", "전체"], ["unseen", "안 푼 것"], ["due", "복습 차례"], ["weak", "약한 것"], ["star", "★ 별표"]], o.filter) +
       (off ? seg("scope", "범위", [["all", "전부"], ["now", "지금 교수·범위만 (" + off + "개 빼기)"]], o.scope) : "") +
-      seg("order", "순서", [["seq", "출족 순서"], ["shuffle", "섞기"]], o.order) +
+      seg("order", "순서", [["seq", "출족 순서"], ["new", "최신 연도부터"], ["old", "오래된 연도부터"], ["shuffle", "섞기"]], o.order) +
       seg("grade", "채점", [["instant", "바로 확인"], ["exam", "시험처럼 (끝나고 채점)"]], o.grade) + "</div>";
     html += '<div class="startbar btnrow"><button class="btn primary" id="startBtn" style="flex:2"></button><a class="btn" style="flex:1;text-align:center;text-decoration:none" href="' + back + '/list">쫙 보기</a></div>';
     app().innerHTML = html;
@@ -1265,7 +1274,7 @@
     });
     document.getElementById("startBtn").onclick = function () {
       var qs = gPick(s, o);
-      if (o.order === "shuffle") qs = shuffle(qs.slice());
+      qs = o.order === "shuffle" ? shuffle(qs.slice()) : o.order === "seq" ? qs : byYear(qs, o.order);
       start(qs.map(function (q) { return { set: s, q: q }; }), o.grade, back, L.title, o.filter === "due");
     };
     var eh = document.getElementById("exHere");
@@ -1315,11 +1324,13 @@
   function viewGRead(s) {
     var L = s.L, back = "#/g/" + encodeURIComponent(L.id);
     document.title = L.title + " 쫙 보기 — 기출";
+    var ro = (gOpts[s.id] || {}).order || "new";   // 강의 화면에서 고른 순서를 따름 (섞기면 출족 순서)
     var html = '<a class="crumb" href="' + back + '">← ' + esc(L.title) + "</a><h1>쫙 보기</h1>" +
       '<p class="sub">문제를 쭉 넘겨 보고, 필요할 때만 답·해설을 펼쳐요. (여기서 본 건 기록에 안 남아요)</p>' +
+      '<div class="card opts" style="margin-top:12px">' + seg("order", "순서", [["seq", "출족 순서"], ["new", "최신 연도부터"], ["old", "오래된 연도부터"]], ro === "shuffle" ? "seq" : ro) + "</div>" +
       '<div class="btnrow" style="margin:12px 0"><button class="btn" id="openAll">답·해설 전부 펼치기</button></div><div class="wlist">';
     var shown = {};
-    s.questions.forEach(function (q) {
+    (ro === "new" || ro === "old" ? byYear(s.questions, ro) : s.questions).forEach(function (q) {
       var cs = q.case && !shown[q.case] && L.cases && L.cases[q.case];
       if (q.case) shown[q.case] = 1;
       html += '<div class="card gq readq">' + gMeta(s, q, false) +
@@ -1329,6 +1340,11 @@
     html += "</div>";
     app().innerHTML = html;
     G.hydrate(app());
+    document.querySelector(".opts .seg").onclick = function (e) {
+      var b = e.target.closest("button"); if (!b) return;
+      gOpts[s.id] = gOpts[s.id] || { filter: "all", scope: "all", order: "new", grade: "instant", year: "all" };
+      gOpts[s.id].order = b.dataset.v; viewGRead(s);
+    };
     document.getElementById("openAll").onclick = function () {
       var open = this.dataset.open !== "1";
       document.querySelectorAll("details.rv").forEach(function (d) { d.open = open; });
